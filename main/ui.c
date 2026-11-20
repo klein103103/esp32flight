@@ -259,6 +259,7 @@ static lv_obj_t *s_radar_bub, *s_radar_blogo;
 static bool s_radar_bub_off;   /* tapped away by the user (#9) */
 static lv_obj_t *s_radar_range;
 static lv_obj_t *s_radar_source;
+static bool s_radar_show_rings;
 static const char *s_aircraft_source;
 static int64_t s_aircraft_snapshot_ms;
 static int64_t s_aircraft_failure_ms = -1;
@@ -1609,6 +1610,20 @@ static void radar_dot_cb(lv_event_t *e)
     }
 }
 
+static void radar_home_cb(lv_event_t *event)
+{
+    (void)event;
+    s_radar_zoom = 1.0;
+    render_radar_panel();
+    render_list_rows();
+}
+
+static void radar_rings_cb(lv_event_t *event)
+{
+    s_radar_show_rings = lv_obj_has_state(lv_event_get_target(event), LV_STATE_CHECKED);
+    render_radar_panel();
+}
+
 static void build_radar_panel(lv_obj_t *scr)
 {
     s_radar_panel = make_panel(scr);
@@ -1702,6 +1717,23 @@ static void build_radar_panel(lv_obj_t *scr)
     lv_obj_set_style_bg_opa(s_radar_source, LV_OPA_90, 0);
     lv_obj_align(s_radar_source, LV_ALIGN_BOTTOM_LEFT, UISX(10), -UISY(6));
     lv_label_set_text(s_radar_source, "Waiting for aircraft data");
+
+    lv_obj_t *home_btn = lv_btn_create(s_radar_panel);
+    lv_obj_set_size(home_btn, UISX(64), UISY(32));
+    lv_obj_align(home_btn, LV_ALIGN_TOP_RIGHT, -UISX(10), UISY(8));
+    lv_obj_add_event_cb(home_btn, radar_home_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *home_text = make_label(home_btn, UIFONT(&font_pl_14, &font_pl_8), COL_TEXT);
+    lv_label_set_text(home_text, "Home");
+    lv_obj_center(home_text);
+
+    lv_obj_t *rings_btn = lv_btn_create(s_radar_panel);
+    lv_obj_set_size(rings_btn, UISX(64), UISY(32));
+    lv_obj_align(rings_btn, LV_ALIGN_TOP_RIGHT, -UISX(82), UISY(8));
+    lv_obj_add_flag(rings_btn, LV_OBJ_FLAG_CHECKABLE);
+    lv_obj_add_event_cb(rings_btn, radar_rings_cb, LV_EVENT_VALUE_CHANGED, NULL);
+    lv_obj_t *rings_text = make_label(rings_btn, UIFONT(&font_pl_14, &font_pl_8), COL_TEXT);
+    lv_label_set_text(rings_text, "Rings");
+    lv_obj_center(rings_text);
 }
 
 /* ---------- optional extra objects: ISS, radiosondes, AIS ships ---------- */
@@ -2204,8 +2236,11 @@ static void render_radar_panel(void)
             rpx = 20;
         }
         lv_obj_clear_flag(s_radar_img, LV_OBJ_FLAG_HIDDEN);
-        /* single range ring on the map */
-        lv_obj_clear_flag(s_radar_rings[2], LV_OBJ_FLAG_HIDDEN);
+        if (s_radar_show_rings) {
+            lv_obj_clear_flag(s_radar_rings[2], LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_add_flag(s_radar_rings[2], LV_OBJ_FLAG_HIDDEN);
+        }
         lv_obj_set_size(s_radar_rings[2], rpx * 2, rpx * 2);
         lv_obj_set_pos(s_radar_rings[2], hx - rpx, hy - rpx);
         lv_obj_add_flag(s_radar_rings[0], LV_OBJ_FLAG_HIDDEN);
@@ -3800,6 +3835,7 @@ void ui_init(void)
     lv_timer_create(aircraft_status_timer_cb, 1000, NULL);
     lv_timer_create(logo_tick_cb, 500, NULL);
     lv_timer_create(idle_timer_cb, 10000, NULL);
+    apply_view(VIEW_RADAR);
 }
 
 static bool s_update_avail;
