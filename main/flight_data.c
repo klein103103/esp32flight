@@ -337,7 +337,10 @@ static esp_err_t fetch_internet(double lat, double lon, int radius_nm,
             primary_failures = 0;
             return ESP_OK;
         }
-        if (primary_failures < 2) {
+        if (primary_retry_at_ms > now_ms + 1000) {
+            /* An explicit refusal already delays the next primary probe. */
+            primary_failures = 2;
+        } else if (primary_failures < 2) {
             primary_failures++;
         }
         ESP_LOGW(TAG, "adsb.fi request failed (%s)", esp_err_to_name(err));
