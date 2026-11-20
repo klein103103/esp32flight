@@ -1,0 +1,28 @@
+name: Build Waveshare 7B
+on:
+  push:
+    branches: [waveshare-7b-custom]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  firmware:
+    runs-on: ubuntu-latest
+    container: espressif/idf:v5.5.1
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build firmware and flash assets
+        shell: bash
+        run: |
+          . /opt/esp/idf/export.sh
+          bash tools/fetch_airports.sh
+          bash tools/fetch_flags.sh
+          idf.py -B build-7b -D IDF_TARGET=esp32s3 -D 'SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.board.7b' build
+      - name: Upload build files
+        uses: actions/upload-artifact@v4
+        with:
+          name: waveshare-7b
+          path: |
+            build-7b/**/*.bin
+            build-7b/flasher_args.json
+          if-no-files-found: error
