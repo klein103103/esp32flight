@@ -296,93 +296,69 @@ static int union_into(aircraft_list_t *out, const aircraft_list_t *extra)
     return added;
 }
 
-/* Park a source that refused us at the HTTP level instead of asking it
- * again every cycle. airplanes.live closed its public API in Sept 2026
- * (403 "contact us" for non-feeders), so a 401/403 parks for 6 h; a 429
- * rate limit for 5 min. Transport errors are not parked: weak Wi-Fi
- * recovers on its own. */
-#define N_SOURCES 3
-static int64_t s_parked_until_ms[N_SOURCES];
+/* Poll the public providers in priority order. Each valid response,
+ * including an empty aircraft list, resets the primary failure count. */
+#define FALLBACK_INTERVAL_MS (180LL * 1000)
+#define DEFAULT_RATE_LIMIT_HOLD_MS (300LL * 1000)
+#define AUTH_REFUSAL_HOLD_MS (6LL * 3600 * 1000)
 
-static void park_if_refused(int src, esp_err_t err, int64_t now_ms)
+static int64_t provider_retry_at(esp_err_t err, int64_t now_ms, int64_t earliest_ms)
 {
     int status = err - ESP_ERR_HTTP_BASE;
-    int64_t hold_ms;
     if (status == 401 || status == 403) {
-        hold_ms = 6LL * 3600 * 1000;
-    } else if (status == 429) {
-        hold_ms = 5LL * 60 * 1000;
-    } else {
-        return;
+        return now_ms + AUTH_REFUSAL_HOLD_MS;
     }
-    s_parked_until_ms[src] = now_ms + hold_ms;
-    ESP_LOGW(TAG, "source %d answered HTTP %d, parked for %d min",
-             src, status, (int)(hold_ms / 60000));
+    if (status == 429) {
+        return now_ms + DEFAULT_RATE_LIMIT_HOLD_MS;
+    }
+    return earliest_ms;
 }
 
-/* Internet aggregators, in preference order, with the union pass. */
 static esp_err_t fetch_internet(double lat, double lon, int radius_nm,
                                 aircraft_list_t *out, char *buf)
 {
-    /* adsb.fi: v3 is the current endpoint (v2 lat/lon is deprecated and
-     * answers with the old "aircraft" key); it caps the radius at 250 nm,
-     * the same as our settings. Personal, non-commercial use, 1 req/s.
-     * airplanes.live stays last and is parked after its first 403. */
-    static const char *src_fmt[N_SOURCES] = {
-        "https://api.adsb.lol/v2/point/%.4f/%.4f/%d",
-        "https://opendata.adsb.fi/api/v3/lat/%.4f/lon/%.4f/dist/%d",
-        "https://api.airplanes.live/v2/point/%.4f/%.4f/%d",
-    };
-    /* The very first fetch skips the union request: it costs a full TLS
-     * handshake and the boot screen is waiting. MLAT-only targets join
-     * one cycle later and stay (the union runs every cycle after). */
-    static bool s_first_fetch = true;
+    static int64_t primary_retry_at_ms;
+    static int64_t fallback_retry_at_ms;
+    static unsigned primary_failures;
     int64_t now_ms = esp_timer_get_time() / 1000;
-    esp_err_t err = ESP_FAIL;
-    for (int i = 0; i < N_SOURCES; i++) {
-        if (now_ms < s_parked_until_ms[i]) {
-            continue;
-        }
-        char url[128];
-        snprintf(url, sizeof(url), src_fmt[i], lat, lon, radius_nm);
-        /* keep-alive slot per aggregator: steady state re-uses one TLS
-         * connection per host instead of a fresh handshake every cycle */
-        err = http_get_keepalive(i, url, buf, FETCH_BUF_SIZE, NULL);
-        park_if_refused(i, err, now_ms);
+    esp_err_t err = ESP_ERR_TIMEOUT;
+    char url[128];
+
+    if (now_ms >= primary_retry_at_ms) {
+        snprintf(url, sizeof(url),
+                 "https://opendata.adsb.fi/api/v3/lat/%.4f/lon/%.4f/dist/%d",
+                 lat, lon, radius_nm);
+        err = http_get_keepalive(0, url, buf, FETCH_BUF_SIZE, NULL);
+        primary_retry_at_ms = provider_retry_at(err, now_ms, now_ms + 1000);
         if (err == ESP_OK) {
             err = parse_point_response(buf, lat, lon, out);
         }
         if (err == ESP_OK) {
-            /* Union with every other aggregator: each network runs its
-             * own MLAT feeders, so a target one cannot multilaterate is
-             * often present elsewhere. */
-            if (!s_first_fetch) {
-                aircraft_list_t *extra = heap_caps_malloc(sizeof(*extra), MALLOC_CAP_SPIRAM);
-                for (int j = 0; extra != NULL && j < N_SOURCES; j++) {
-                    if (j == i || now_ms < s_parked_until_ms[j]) {
-                        continue;
-                    }
-                    char url2[128];
-                    snprintf(url2, sizeof(url2), src_fmt[j], lat, lon, radius_nm);
-                    esp_err_t jerr = http_get_keepalive(j, url2, buf, FETCH_BUF_SIZE, NULL);
-                    park_if_refused(j, jerr, now_ms);
-                    if (jerr != ESP_OK || parse_point_response(buf, lat, lon, extra) != ESP_OK) {
-                        continue;
-                    }
-                    int added = union_into(out, extra);
-                    if (added > 0) {
-                        ESP_LOGI(TAG, "merged %d extra aircraft from source %d", added, j);
-                    }
-                }
-                free(extra);
-            }
-            if (i > 0) {
-                ESP_LOGI(TAG, "using fallback source %d", i);
-            }
-            s_first_fetch = false;
+            primary_failures = 0;
             return ESP_OK;
         }
-        ESP_LOGW(TAG, "source %d failed (%s)", i, esp_err_to_name(err));
+        if (primary_failures < 2) {
+            primary_failures++;
+        }
+        ESP_LOGW(TAG, "adsb.fi request failed (%s)", esp_err_to_name(err));
+    }
+
+    if (primary_failures < 2 || now_ms < fallback_retry_at_ms) {
+        return err;
+    }
+
+    now_ms = esp_timer_get_time() / 1000;
+    snprintf(url, sizeof(url), "https://api.adsb.lol/v2/point/%.4f/%.4f/%d",
+             lat, lon, radius_nm);
+    err = http_get_keepalive(1, url, buf, FETCH_BUF_SIZE, NULL);
+    fallback_retry_at_ms = provider_retry_at(err, now_ms, now_ms + FALLBACK_INTERVAL_MS);
+    if (err == ESP_OK) {
+        err = parse_point_response(buf, lat, lon, out);
+    }
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "using adsb.lol fallback");
+    } else {
+        ESP_LOGW(TAG, "adsb.lol request failed (%s)", esp_err_to_name(err));
     }
     return err;
 }
