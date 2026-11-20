@@ -96,4 +96,94 @@ sed -n '/^static int parse_hhmm/,/^}/p' main/ui_settings.c >> "$tmp/hhmm_tests.c
 cc -o "$tmp/hhmm_tests" "$tmp/hhmm_tests.c"
 "$tmp/hhmm_tests"
 
+# Exercise the production provider selection with fake HTTP and a fake clock.
+cat > "$tmp/providers.c" <<'EOF'
+#include <assert.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+
+typedef int esp_err_t;
+typedef struct { const char *source; unsigned count; } aircraft_list_t;
+#define ESP_OK 0
+#define ESP_ERR_TIMEOUT 1
+#define ESP_ERR_HTTP_BASE 1000
+#define FETCH_BUF_SIZE 64
+#define ESP_LOGW(...) ((void)0)
+#define ESP_LOGI(...) ((void)0)
+
+static int64_t clock_ms;
+static int calls[2];
+static int replies[2];
+
+static int64_t esp_timer_get_time(void) { return clock_ms * 1000; }
+
+static int http_get_keepalive(int slot, const char *url, char *buf,
+                              size_t size, size_t *length)
+{
+    (void)length;
+    assert(slot == 0 || slot == 1);
+    assert(strstr(url, slot == 0 ? "opendata.adsb.fi/" : "api.adsb.lol/"));
+    calls[slot]++;
+    snprintf(buf, size, "empty aircraft list");
+    return replies[slot];
+}
+
+static int parse_point_response(const char *buf, double lat, double lon,
+                                aircraft_list_t *out)
+{
+    (void)lat;
+    (void)lon;
+    assert(strcmp(buf, "empty aircraft list") == 0);
+    out->count = 0;
+    return ESP_OK;
+}
+
+EOF
+sed -n '/^#define FALLBACK_INTERVAL_MS/,/^\/\* LAN receiver URL/{ /^\/\* LAN receiver URL/d; p; }' main/flight_data.c >> "$tmp/providers.c"
+cat >> "$tmp/providers.c" <<'EOF'
+int main(int argc, char **argv)
+{
+    char buf[FETCH_BUF_SIZE];
+    aircraft_list_t out = {0};
+    assert(argc == 2);
+    if (strcmp(argv[1], "refused") == 0) {
+        replies[0] = ESP_ERR_HTTP_BASE + 403;
+        assert(fetch_internet(0, 0, 25, &out, buf) == ESP_OK);
+        assert(calls[0] == 1 && calls[1] == 1);
+        assert(strcmp(out.source, "adsb.lol") == 0);
+        clock_ms = 179999;
+        assert(fetch_internet(0, 0, 25, &out, buf) != ESP_OK);
+        assert(calls[0] == 1 && calls[1] == 1);
+        clock_ms = 180000;
+        assert(fetch_internet(0, 0, 25, &out, buf) == ESP_OK);
+        assert(calls[0] == 1 && calls[1] == 2);
+    } else {
+        assert(fetch_internet(0, 0, 25, &out, buf) == ESP_OK);
+        assert(out.count == 0 && strcmp(out.source, "adsb.fi") == 0);
+        assert(calls[0] == 1 && calls[1] == 0);
+        replies[0] = ESP_ERR_TIMEOUT;
+        clock_ms = 10000;
+        assert(fetch_internet(0, 0, 25, &out, buf) != ESP_OK);
+        assert(calls[1] == 0);
+        clock_ms = 20000;
+        assert(fetch_internet(0, 0, 25, &out, buf) == ESP_OK);
+        assert(calls[1] == 1 && strcmp(out.source, "adsb.lol") == 0);
+        clock_ms = 30000;
+        assert(fetch_internet(0, 0, 25, &out, buf) != ESP_OK);
+        assert(calls[1] == 1);
+        replies[0] = ESP_OK;
+        clock_ms = 40000;
+        assert(fetch_internet(0, 0, 25, &out, buf) == ESP_OK);
+        assert(calls[1] == 1 && strcmp(out.source, "adsb.fi") == 0);
+    }
+    return 0;
+}
+EOF
+cc -std=c11 -Wall -Wextra -Werror -o "$tmp/providers" "$tmp/providers.c"
+"$tmp/providers" recovery
+"$tmp/providers" refused
+echo "provider tests passed"
+
 echo "host tests passed"
