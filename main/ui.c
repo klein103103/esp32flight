@@ -258,6 +258,11 @@ static lv_obj_t *s_radar_info;
 static lv_obj_t *s_radar_bub, *s_radar_blogo;
 static bool s_radar_bub_off;   /* tapped away by the user (#9) */
 static lv_obj_t *s_radar_range;
+static lv_obj_t *s_radar_source;
+static const char *s_aircraft_source;
+static int64_t s_aircraft_snapshot_ms;
+static int64_t s_aircraft_failure_ms = -1;
+static bool s_aircraft_cleared;
 static lv_obj_t *s_radar_img;
 static lv_obj_t *s_radar_rings[3];
 static lv_obj_t *s_radar_home;
@@ -492,6 +497,32 @@ static void logo_tick_cb(lv_timer_t *t)
     }
     render_list_rows();
     render_right();
+}
+
+static void aircraft_status_timer_cb(lv_timer_t *timer)
+{
+    (void)timer;
+    if (s_radar_source == NULL || s_aircraft_source == NULL) {
+        return;
+    }
+    int64_t now_ms = esp_timer_get_time() / 1000;
+    if (s_aircraft_failure_ms >= 0 && !s_aircraft_cleared &&
+        now_ms - s_aircraft_failure_ms >= 60000) {
+        s_aircraft_cleared = true;
+        ui_update(NULL);
+    }
+    char status[96];
+    snprintf(status, sizeof(status), "%s | %lld s%s", s_aircraft_source,
+             (long long)((now_ms - s_aircraft_snapshot_ms) / 1000),
+             s_aircraft_cleared ? " | Offline" : (s_aircraft_failure_ms >= 0 ? " | Stale" : ""));
+    label_set_if_changed(s_radar_source, status);
+}
+
+void ui_aircraft_refresh_failed(void)
+{
+    if (s_aircraft_failure_ms < 0) {
+        s_aircraft_failure_ms = esp_timer_get_time() / 1000;
+    }
 }
 
 static void clock_timer_cb(lv_timer_t *t)
@@ -1666,6 +1697,11 @@ static void build_radar_panel(lv_obj_t *scr)
     s_radar_range = make_label(s_radar_panel, UIFONT(&font_pl_14, &font_pl_8), COL_DIM);
     lv_obj_align(s_radar_range, LV_ALIGN_BOTTOM_RIGHT, -UISX(10), -UISY(6));
     lv_label_set_text(s_radar_range, "");
+    s_radar_source = make_label(s_radar_panel, UIFONT(&font_pl_14, &font_pl_8), COL_TEXT);
+    lv_obj_set_style_bg_color(s_radar_source, COL_BG, 0);
+    lv_obj_set_style_bg_opa(s_radar_source, LV_OPA_90, 0);
+    lv_obj_align(s_radar_source, LV_ALIGN_BOTTOM_LEFT, UISX(10), -UISY(6));
+    lv_label_set_text(s_radar_source, "Waiting for aircraft data");
 }
 
 /* ---------- optional extra objects: ISS, radiosondes, AIS ships ---------- */
@@ -3761,6 +3797,7 @@ void ui_init(void)
     s_cycle_timer = lv_timer_create(cycle_timer_cb, CYCLE_MS, NULL);
     lv_timer_pause(s_cycle_timer);
     lv_timer_create(clock_timer_cb, 5000, NULL);
+    lv_timer_create(aircraft_status_timer_cb, 1000, NULL);
     lv_timer_create(logo_tick_cb, 500, NULL);
     lv_timer_create(idle_timer_cb, 10000, NULL);
 }
@@ -4241,9 +4278,16 @@ static void render_detail(void)
 void ui_update(const aircraft_list_t *list)
 {
     /* Snapshot aircraft + routes so touch callbacks never race the fetcher. */
+    if (list != NULL && list->source != NULL) {
+        s_aircraft_source = list->source;
+        s_aircraft_snapshot_ms = list->fetched_at_ms;
+        s_aircraft_failure_ms = -1;
+        s_aircraft_cleared = false;
+    }
+    int count = list != NULL ? list->count : 0;
     flight_stats_get(&s_stats_snap);
     s_all_count = 0;
-    for (int i = 0; i < list->count && i < MAX_AIRCRAFT; i++) {
+    for (int i = 0; i < count && i < MAX_AIRCRAFT; i++) {
         if (!list->ac[i].has_pos) {
             continue;
         }
@@ -4258,7 +4302,7 @@ void ui_update(const aircraft_list_t *list)
         t->ground = list->ac[i].on_ground;
         t->fcls = (uint8_t)flight_sprite(&list->ac[i]);
     }
-    s_shown_count = list->count < MAX_SHOWN ? list->count : MAX_SHOWN;
+    s_shown_count = count < MAX_SHOWN ? count : MAX_SHOWN;
     for (int i = 0; i < s_shown_count; i++) {
         s_shown[i].ac = list->ac[i];
         const route_info_t *rt = routes_get_cached(list->ac[i].callsign);

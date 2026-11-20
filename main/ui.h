@@ -47,3 +47,4 @@ void ui_set_home(double lat, double lon);
 /* Replace displayed flight data. Routes are looked up via routes_get_cached
  * and snapshotted, so later touch interactions don't race the network task. */
 void ui_update(const aircraft_list_t *list);
+void ui_aircraft_refresh_failed(void);

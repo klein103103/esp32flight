@@ -959,6 +959,10 @@ static void flight_task(void *arg)
             mqtt_pub_state(mq);
         } else {
             consecutive_failures++;
+            if (lvgl_port_lock(1000)) {
+                ui_aircraft_refresh_failed();
+                lvgl_port_unlock();
+            }
             ESP_LOGW(TAG, "fetch failed (%s), %d in a row",
                      esp_err_to_name(err), consecutive_failures);
             if (consecutive_failures >= 3) {
