@@ -36,6 +36,7 @@ void settings_load(void)
     s_settings.lat = 0;
     s_settings.lon = 0;
     s_settings.radius_nm = CONFIG_CANFLIGHT_RADIUS_NM;
+    s_settings.poll_seconds = CONFIG_CANFLIGHT_POLL_SECONDS;
     s_settings.hide_ground = true;
     s_settings.hide_private = false;
     s_settings.show_classes = FCLS_ALL_MASK;
@@ -115,6 +116,11 @@ void settings_load(void)
     int32_t radius = 0;
     if (nvs_get_i32(h, "radius_nm", &radius) == ESP_OK && radius >= 1 && radius <= 250) {
         s_settings.radius_nm = radius;
+    }
+    int32_t poll_seconds;
+    if (nvs_get_i32(h, "poll_seconds", &poll_seconds) == ESP_OK &&
+        poll_seconds >= 5 && poll_seconds <= 600) {
+        s_settings.poll_seconds = poll_seconds;
     }
     uint8_t hide = 0;
     if (nvs_get_u8(h, "hide_gnd", &hide) == ESP_OK) {
@@ -304,6 +310,7 @@ esp_err_t settings_save(void)
     snprintf(coord, sizeof(coord), "%.6f", s_settings.lon);
     nvs_set_str(h, "lon", coord);
     nvs_set_i32(h, "radius_nm", s_settings.radius_nm);
+    nvs_set_i32(h, "poll_seconds", s_settings.poll_seconds);
     nvs_set_u8(h, "hide_gnd", s_settings.hide_ground ? 1 : 0);
     nvs_set_u8(h, "hide_priv", s_settings.hide_private ? 1 : 0);
     nvs_set_u8(h, "show_cls", s_settings.show_classes);

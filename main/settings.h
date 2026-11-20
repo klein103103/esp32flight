@@ -11,6 +11,7 @@ typedef struct {
     double lat;
     double lon;
     int    radius_nm;
+    int    poll_seconds;
     bool   hide_ground;
     bool   hide_private;    /* hide non-airline traffic (callsign not AAA123-style) */
     int    theme;           /* index into theme.c palettes */

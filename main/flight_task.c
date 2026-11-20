@@ -1017,7 +1017,7 @@ static void flight_task(void *arg)
             airspace_poll(lat, lon);
         }
 
-        vTaskDelay(pdMS_TO_TICKS(CONFIG_CANFLIGHT_POLL_SECONDS * 1000));
+        vTaskDelay(pdMS_TO_TICKS(settings_get()->poll_seconds * 1000));
     }
 }
 

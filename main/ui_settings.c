@@ -59,6 +59,7 @@ static lv_obj_t *s_sw_map_light;
 static lv_obj_t *s_sw_ladsb;
 static lv_obj_t *s_sw_retro_map;
 static lv_obj_t *s_slider_radius, *s_radius_label;
+static lv_obj_t *s_ta_poll_seconds;
 
 static bool s_scan_busy;
 static bool s_geo_busy;
@@ -93,7 +94,7 @@ static void kb_event_cb(lv_event_t *e)
 static void ta_focus_cb(lv_event_t *e)
 {
     lv_obj_t *ta = lv_event_get_target(e);
-    bool numeric = (ta == s_ta_lat || ta == s_ta_lon || ta == s_ta_amb_idle ||
+    bool numeric = (ta == s_ta_poll_seconds || ta == s_ta_lat || ta == s_ta_lon || ta == s_ta_amb_idle ||
                     ta == s_ta_night_from || ta == s_ta_night_to ||
                     ta == s_ta_amb_from || ta == s_ta_amb_to);
     lv_keyboard_set_mode(s_kb, numeric ? LV_KEYBOARD_MODE_NUMBER : LV_KEYBOARD_MODE_TEXT_LOWER);
@@ -315,6 +316,11 @@ static void save_cb(lv_event_t *e)
     cfg->lat = atof(lv_textarea_get_text(s_ta_lat));
     cfg->lon = atof(lv_textarea_get_text(s_ta_lon));
     cfg->radius_nm = lv_slider_get_value(s_slider_radius);
+    const char *poll_text = lv_textarea_get_text(s_ta_poll_seconds);
+    if (poll_text[0] != '\0') {
+        int seconds = atoi(poll_text);
+        cfg->poll_seconds = seconds < 5 ? 5 : (seconds > 600 ? 600 : seconds);
+    }
     strlcpy(cfg->track_id, lv_textarea_get_text(s_ta_track), sizeof(cfg->track_id));
     cfg->track_on = lv_obj_has_state(s_sw_track, LV_STATE_CHECKED) && cfg->track_id[0] != '\0';
     cfg->hide_ground = lv_obj_has_state(s_sw_ground, LV_STATE_CHECKED);
@@ -659,6 +665,12 @@ void ui_settings_open(void)
     s_ta_track = add_textarea(p, 0, 328, 290, cfg->track_id, false);
     lv_textarea_set_max_length(s_ta_track, sizeof(cfg->track_id) - 1);
     s_sw_track = add_switch(p, L()->track_on_lbl, 380, 334, cfg->track_on);
+
+    add_label(p, "Aircraft refresh (5–600 sec)", 0, 390);
+    snprintf(buf, sizeof(buf), "%d", cfg->poll_seconds);
+    s_ta_poll_seconds = add_textarea(p, 0, 416, 180, buf, false);
+    lv_textarea_set_accepted_chars(s_ta_poll_seconds, "0123456789");
+    lv_textarea_set_max_length(s_ta_poll_seconds, 3);
 
     /* --- Filters + alerts --- */
     p = tab_page(tv, L()->tab_filters);
