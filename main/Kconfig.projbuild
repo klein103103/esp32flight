@@ -292,14 +292,14 @@ menu "Example Configuration"
 
         config CANFLIGHT_RADIUS_NM
             int "Search radius (nautical miles)"
-            default 54
+            default 25
             range 5 250
             help
-                100 km is about 54 nm. airplanes.live caps at 250 nm.
+                Starting aircraft tracking radius in nautical miles.
 
         config CANFLIGHT_POLL_SECONDS
             int "Aircraft list poll interval (seconds)"
-            default 8
-            range 2 120
+            default 10
+            range 5 600
     endmenu
 endmenu
