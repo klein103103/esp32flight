@@ -335,6 +335,7 @@ static esp_err_t fetch_internet(double lat, double lon, int radius_nm,
         }
         if (err == ESP_OK) {
             primary_failures = 0;
+            out->source = "adsb.fi";
             return ESP_OK;
         }
         if (primary_retry_at_ms > now_ms + 1000) {
@@ -359,6 +360,7 @@ static esp_err_t fetch_internet(double lat, double lon, int radius_nm,
         err = parse_point_response(buf, lat, lon, out);
     }
     if (err == ESP_OK) {
+        out->source = "adsb.lol";
         ESP_LOGI(TAG, "using adsb.lol fallback");
     } else {
         ESP_LOGW(TAG, "adsb.lol request failed (%s)", esp_err_to_name(err));
@@ -433,6 +435,7 @@ esp_err_t flight_fetch_nearby(double lat, double lon, int radius_nm, aircraft_li
     if (cfg->local_adsb[0] != '\0' && cfg->local_adsb_use) {
         esp_err_t lerr = fetch_local(cfg->local_adsb, lat, lon, out, buf);
         if (lerr == ESP_OK) {
+            out->source = "Local receiver";
             if (cfg->local_merge) {
                 aircraft_list_t *net = heap_caps_malloc(sizeof(*net), MALLOC_CAP_SPIRAM);
                 if (net != NULL && fetch_internet(lat, lon, radius_nm, net, buf) == ESP_OK) {

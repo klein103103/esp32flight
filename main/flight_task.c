@@ -356,6 +356,11 @@ static void publish_web_state(const aircraft_list_t *list, const weather_t *wx,
     cJSON_AddNumberToObject(root, "lat", lat);
     cJSON_AddNumberToObject(root, "lon", lon);
     cJSON_AddNumberToObject(root, "radius_km", (int)(radius_nm * 1.852));
+    if (list->source != NULL) {
+        cJSON_AddStringToObject(root, "aircraft_source", list->source);
+        cJSON_AddNumberToObject(root, "aircraft_snapshot_age_ms",
+                               esp_timer_get_time() / 1000 - list->fetched_at_ms);
+    }
     if (wx->valid) {
         cJSON *jw = cJSON_AddObjectToObject(root, "weather");
         cJSON_AddNumberToObject(jw, "temp_c", (int)(wx->temp_c + 0.5f));
@@ -718,6 +723,8 @@ static void flight_task(void *arg)
                     if (s_track_found) {
                         list->ac[0] = tac;
                         list->count = 1;
+                        list->source = "Single-aircraft lookup";
+                        list->fetched_at_ms = esp_timer_get_time() / 1000;
                         err = ESP_OK;
                     } else {
                         s_track_next_ms = tick_ms + 60000;

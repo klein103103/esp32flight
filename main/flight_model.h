@@ -71,6 +71,7 @@ typedef struct {
     aircraft_t ac[MAX_AIRCRAFT];
     int        count;
     long long  fetched_at_ms;
+    const char *source;
 } aircraft_list_t;
 
 /* Scheduled airline traffic: callsign like "RYR76ZJ" (3-letter ICAO airline
