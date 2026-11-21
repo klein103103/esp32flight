@@ -17,6 +17,7 @@
 #include "lvgl_port.h"
 #include "theme.h"
 #include "routes.h"
+#include "geo_math.h"
 #ifndef APKFLIGHT
 #include "sd_cache.h"
 #endif
@@ -120,7 +121,7 @@ static int from_adsbdb(const char *hex, char urls[2][256], char *json, size_t jn
     return n;
 }
 
-static uint16_t *fetch_decode(const char *url, uint8_t *raw, int *w, int *h)
+static uint16_t *fetch_decode(const char *url, uint8_t *raw, int *w, int *h, size_t *decoded_bytes)
 {
     size_t len = 0;
     esp_err_t err = http_get_to_buffer_t(url, (char *)raw, PHOTO_MAX_BYTES, &len, 6500);
@@ -129,6 +130,7 @@ static uint16_t *fetch_decode(const char *url, uint8_t *raw, int *w, int *h)
         return NULL;
     }
     uint16_t *px = jpeg_decode_rgb565(raw, len, 700, 380, w, h);
+    if (px != NULL) *decoded_bytes = len;
     ESP_LOGI(TAG, "image %u B -> %s", (unsigned)len, px ? "decoded" : "decode failed");
     return px;
 }
@@ -144,6 +146,12 @@ static void show_route_details(const photo_req_t *req, char *buffer, size_t size
                  route.destination.iata[0] ? route.destination.iata : route.destination.icao,
                  route.destination.city[0] ? route.destination.city : route.destination.name,
                  route.airline_name);
+        if (req->aircraft.has_pos) {
+            double distance_nm = geo_haversine_km(req->aircraft.lat, req->aircraft.lon,
+                                                   route.destination.lat, route.destination.lon) / 1.852;
+            size_t used = strlen(route_text);
+            snprintf(route_text + used, sizeof(route_text) - used, "  |  %.0f NM to destination", distance_nm);
+        }
     }
     char identity[118];
     const char *reg = req->aircraft.reg;
@@ -180,7 +188,14 @@ static void show_route_details(const photo_req_t *req, char *buffer, size_t size
 static void display_cached_photo(void)
 {
     lv_img_set_src(s_img, &s_photo_dsc);
-    lv_img_set_zoom(s_img, s_photo_dsc.header.w <= 390 && s_photo_dsc.header.h <= 200 ? 512 : 256);
+    unsigned zoom = s_photo_dsc.header.w <= 390 && s_photo_dsc.header.h <= 200 ? 512 : 256;
+    if (s_aircraft_details != NULL) {
+        unsigned fit_width = (unsigned)(LV_HOR_RES - UISX(32)) * 256U / s_photo_dsc.header.w;
+        unsigned fit_height = (unsigned)(LV_VER_RES - UISY(205)) * 256U / s_photo_dsc.header.h;
+        if (zoom > fit_width) zoom = fit_width;
+        if (zoom > fit_height) zoom = fit_height;
+    }
+    lv_img_set_zoom(s_img, zoom);
     lv_obj_clear_flag(s_img, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(s_msg, LV_OBJ_FLAG_HIDDEN);
     lv_label_set_text(s_credit, s_photo_credit);
@@ -192,10 +207,12 @@ static void photo_task(void *arg)
     char credit[96] = "";
     uint16_t *pixels = NULL;
     int w = 0, h = 0;
+    size_t downloaded_bytes = 0;
 
     char *json = malloc(8192);
     uint8_t *raw = req->photo_cached ? NULL : heap_caps_malloc(PHOTO_MAX_BYTES, MALLOC_CAP_SPIRAM);
 #ifndef APKFLIGHT
+    char cached_image[48] = "", cached_credit[48];
     if (raw != NULL && strlen(req->hex) == 6 && strspn(req->hex, "0123456789abcdefABCDEF") == 6) {
         char path[48];
         char hex[7];
@@ -210,29 +227,37 @@ static void photo_task(void *arg)
             pixels = jpeg_decode_rgb565(raw, size, 700, 380, &w, &h);
             if (pixels != NULL) strlcpy(credit, "Photo: SD card", sizeof(credit));
         }
+        if (pixels == NULL) {
+            snprintf(cached_image, sizeof(cached_image), "/sd/radar/cachep/%s.jpg", hex);
+            snprintf(cached_credit, sizeof(cached_credit), "/sd/radar/cachep/%s.txt", hex);
+            size_t credit_size = sd_cache_read(cached_credit, credit, sizeof(credit) - 1);
+            credit[credit_size] = '\0';
+            if (credit_size > 0) {
+                size = sd_cache_read(cached_image, raw, PHOTO_MAX_BYTES);
+                if (size > 4) pixels = jpeg_decode_rgb565(raw, size, 700, 380, &w, &h);
+            }
+        }
     }
 #endif
-    if (req->show_details && json != NULL) {
-        show_route_details(req, json, 8192);
-    }
+    bool route_first = req->show_details && json != NULL && pixels == NULL && !req->photo_cached;
+    if (route_first) show_route_details(req, json, 8192);
     if (pixels == NULL && json != NULL && raw != NULL) {
         char url[256];
         if (from_planespotters(req->hex, url, sizeof(url), credit, sizeof(credit),
                                json, 8192)) {
-            pixels = fetch_decode(url, raw, &w, &h);
+            pixels = fetch_decode(url, raw, &w, &h, &downloaded_bytes);
         }
         if (pixels == NULL) {
             char urls[2][256];
             int n = from_adsbdb(req->hex, urls, json, 8192);
             for (int i = 0; i < n && pixels == NULL; i++) {
-                pixels = fetch_decode(urls[i], raw, &w, &h);
+                pixels = fetch_decode(urls[i], raw, &w, &h, &downloaded_bytes);
             }
             if (pixels != NULL) {
                 strlcpy(credit, "photo: airport-data.com", sizeof(credit));
             }
         }
     }
-    free(raw);
     if (pixels == NULL && !req->photo_cached) {
         ESP_LOGI(TAG, "%s: no photo from any source", req->hex);
     }
@@ -260,6 +285,14 @@ static void photo_task(void *arg)
         lvgl_port_unlock();
     }
     free(pixels);
+#ifndef APKFLIGHT
+    if (downloaded_bytes > 0 && cached_image[0] && credit[0] &&
+        sd_cache_write_photo(cached_credit, credit, strlen(credit))) {
+        sd_cache_write_photo(cached_image, raw, downloaded_bytes);
+    }
+#endif
+    free(raw);
+    if (req->show_details && json != NULL && !route_first) show_route_details(req, json, 8192);
     if (req->show_details && json == NULL && lvgl_port_lock(-1)) {
         if (s_overlay != NULL && s_aircraft_details != NULL) {
             lv_label_set_text(s_aircraft_details, "Extra aircraft and route details unavailable");
@@ -313,12 +346,14 @@ static void open_photo_panel(const char *hex, const char *callsign, const char *
         lv_obj_set_style_text_font(live, UIFONT(&font_pl_14, &font_pl_8), 0);
         lv_obj_set_style_text_color(live, COL_TEXT, 0);
         lv_obj_set_pos(live, UISX(16), UISY(48));
-        lv_label_set_text(live, live_details);
+        lv_label_set_text_fmt(live, "%s\nSquawk %s  |  Vertical rate %+d ft/min",
+                              live_details, aircraft->squawk[0] ? aircraft->squawk : "—",
+                              aircraft->baro_rate_fpm);
         s_aircraft_details = lv_label_create(s_overlay);
         lv_obj_set_style_text_font(s_aircraft_details, UIFONT(&font_pl_14, &font_pl_8), 0);
         lv_obj_set_style_text_color(s_aircraft_details, COL_TEXT, 0);
         lv_obj_set_width(s_aircraft_details, LV_HOR_RES - UISX(40));
-        lv_obj_set_pos(s_aircraft_details, UISX(16), UISY(72));
+        lv_obj_set_pos(s_aircraft_details, UISX(16), UISY(94));
         lv_label_set_text(s_aircraft_details, "Looking up route and aircraft details…");
     }
     s_msg = lv_label_create(s_overlay);
@@ -328,7 +363,7 @@ static void open_photo_panel(const char *hex, const char *callsign, const char *
     lv_obj_center(s_msg);
 
     s_img = lv_img_create(s_overlay);
-    lv_obj_align(s_img, LV_ALIGN_CENTER, 0, show_details ? UISY(60) : 0);
+    lv_obj_align(s_img, LV_ALIGN_CENTER, 0, show_details ? UISY(76) : 0);
     lv_obj_add_flag(s_img, LV_OBJ_FLAG_HIDDEN);
 
     s_credit = lv_label_create(s_overlay);

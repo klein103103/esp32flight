@@ -72,6 +72,33 @@ size_t sd_cache_read(const char *path, void *buffer, size_t capacity)
     return count;
 }
 
+static bool write_cache_file(const char *path, const void *buffer, size_t size)
+{
+    char temporary[80];
+    size_t len = strlen(path);
+    if (len < 4 || len >= sizeof(temporary)) return false;
+    memcpy(temporary, path, len - 4);
+    memcpy(temporary + len - 4, ".tmp", 5);
+    FILE *file = fopen(temporary, "wb");
+    if (file == NULL) return false;
+    bool written = fwrite(buffer, 1, size, file) == size;
+    if (fclose(file) != 0) written = false;
+    if (!written || rename(temporary, path) != 0) {
+        unlink(temporary);
+        return false;
+    }
+    return true;
+}
+
+bool sd_cache_write_photo(const char *path, const void *buffer, size_t size)
+{
+    uint64_t total, free_bytes;
+    if (!sd_cache_ready() || esp_vfs_fat_info("/sd", &total, &free_bytes) != ESP_OK ||
+        free_bytes < UINT64_C(512) * 1024 * 1024 + size) return false;
+    mkdir("/sd/radar/cachep", 0775);
+    return write_cache_file(path, buffer, size);
+}
+
 bool sd_cache_write_tile(const char *directory, const char *path,
                          const void *buffer, size_t size)
 {
@@ -87,19 +114,7 @@ bool sd_cache_write_tile(const char *directory, const char *path,
     }
     if (free_bytes < UINT64_C(512) * 1024 * 1024 + size) return false;
     mkdir(directory, 0775);
-    char temporary[80];
-    size_t len = strlen(path);
-    if (len < 4 || len >= sizeof(temporary)) return false;
-    memcpy(temporary, path, len - 4);
-    memcpy(temporary + len - 4, ".tmp", 5);
-    FILE *file = fopen(temporary, "wb");
-    if (file == NULL) return false;
-    bool written = fwrite(buffer, 1, size, file) == size;
-    if (fclose(file) != 0) written = false;
-    if (!written || rename(temporary, path) != 0) {
-        unlink(temporary);
-        return false;
-    }
+    if (!write_cache_file(path, buffer, size)) return false;
     free_bytes -= size;
     return true;
 }
