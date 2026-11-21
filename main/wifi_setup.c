@@ -168,6 +168,10 @@ esp_err_t wifi_setup_start(char *password, size_t capacity)
         address.netmask.addr = inet_addr("255.255.255.0");
         esp_netif_dhcps_stop(s_ap);
         esp_err_t ip_error = esp_netif_set_ip_info(s_ap, &address);
+        if (ip_error == ESP_OK) {
+            /* Re-arm DHCP before AP mode starts so the phone gets an address. */
+            ip_error = esp_netif_dhcps_start(s_ap);
+        }
         if (ip_error != ESP_OK) {
             esp_netif_destroy_default_wifi(s_ap);
             s_ap = NULL;
