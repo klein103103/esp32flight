@@ -1947,7 +1947,12 @@ static void radar_more_cb(lv_event_t *event)
     (void)event;
     for (int i = 0; i < s_all_count; i++) {
         if (strcmp(s_selected_hex, s_all[i].hex) == 0) {
-            ui_aircraft_more_open(s_all[i].hex, s_all[i].callsign);
+            const amb_target_t *target = &s_all[i];
+            char live_details[112], altitude[20], speed[20];
+            snprintf(live_details, sizeof(live_details), "%s  |  %s  |  %.1f NM",
+                     target->ground ? L()->ground : units_alt(target->alt_ft, altitude, sizeof(altitude)),
+                     units_speed(target->speed_kts, speed, sizeof(speed)), (double)target->dist_nm);
+            ui_aircraft_more_open(target->hex, target->callsign, live_details);
             break;
         }
     }

@@ -169,9 +169,6 @@ static void photo_task(void *arg)
     int w = 0, h = 0;
 
     char *json = malloc(8192);
-    if (req->show_details && json != NULL) {
-        read_aircraft_details(req, json, 8192);
-    }
     uint8_t *raw = heap_caps_malloc(PHOTO_MAX_BYTES, MALLOC_CAP_SPIRAM);
     if (json != NULL && raw != NULL) {
         char url[256];
@@ -190,7 +187,6 @@ static void photo_task(void *arg)
             }
         }
     }
-    free(json);
     free(raw);
     if (pixels == NULL) {
         ESP_LOGI(TAG, "%s: no photo from any source", req->hex);
@@ -223,13 +219,23 @@ static void photo_task(void *arg)
         lvgl_port_unlock();
     }
     free(pixels);
+    if (req->show_details && json != NULL) {
+        read_aircraft_details(req, json, 8192);
+    } else if (req->show_details && lvgl_port_lock(-1)) {
+        if (s_overlay != NULL && s_aircraft_details != NULL) {
+            lv_label_set_text(s_aircraft_details, "Extra aircraft and route details unavailable");
+        }
+        lvgl_port_unlock();
+    }
+    free(json);
     free(req);
     s_busy = false;
     vTaskDelete(NULL);
 }
 
-static void open_photo_panel(const char *hex, const char *callsign, bool show_details)
+static void open_photo_panel(const char *hex, const char *callsign, const char *live_details)
 {
+    bool show_details = live_details != NULL;
     if (s_overlay != NULL || s_busy) {
         return;
     }
@@ -263,12 +269,17 @@ static void open_photo_panel(const char *hex, const char *callsign, bool show_de
 
     s_aircraft_details = NULL;
     if (show_details) {
+        lv_obj_t *live = lv_label_create(s_overlay);
+        lv_obj_set_style_text_font(live, UIFONT(&font_pl_14, &font_pl_8), 0);
+        lv_obj_set_style_text_color(live, COL_TEXT, 0);
+        lv_obj_set_pos(live, UISX(16), UISY(48));
+        lv_label_set_text(live, live_details);
         s_aircraft_details = lv_label_create(s_overlay);
         lv_obj_set_style_text_font(s_aircraft_details, UIFONT(&font_pl_14, &font_pl_8), 0);
         lv_obj_set_style_text_color(s_aircraft_details, COL_TEXT, 0);
         lv_obj_set_width(s_aircraft_details, LV_HOR_RES - UISX(40));
-        lv_obj_set_pos(s_aircraft_details, UISX(16), UISY(48));
-        lv_label_set_text(s_aircraft_details, "Loading aircraft and route details…");
+        lv_obj_set_pos(s_aircraft_details, UISX(16), UISY(72));
+        lv_label_set_text(s_aircraft_details, "Looking up route and aircraft details…");
     }
     s_msg = lv_label_create(s_overlay);
     lv_obj_set_style_text_font(s_msg, UIFONT(&font_pl_20, &font_pl_12), 0);
@@ -306,10 +317,10 @@ static void open_photo_panel(const char *hex, const char *callsign, bool show_de
 
 void ui_photo_open(const char *hex, const char *callsign)
 {
-    open_photo_panel(hex, callsign, false);
+    open_photo_panel(hex, callsign, NULL);
 }
 
-void ui_aircraft_more_open(const char *hex, const char *callsign)
+void ui_aircraft_more_open(const char *hex, const char *callsign, const char *live_details)
 {
-    open_photo_panel(hex, callsign, true);
+    open_photo_panel(hex, callsign[0] ? callsign : hex, live_details);
 }
