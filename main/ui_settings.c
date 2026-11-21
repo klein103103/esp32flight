@@ -20,6 +20,7 @@
 #include "lang.h"
 #include "lvgl_port.h"
 #include "settings.h"
+#include "radar_preferences.h"
 #ifndef APKFLIGHT
 #include "waveshare_rgb_lcd_port.h"
 #include "wifi_setup.h"
@@ -378,7 +379,7 @@ static void save_cb(lv_event_t *e)
     const char *poll_text = lv_textarea_get_text(s_ta_poll_seconds);
     if (poll_text[0] != '\0') {
         int seconds = atoi(poll_text);
-        cfg->poll_seconds = seconds < 5 ? 5 : (seconds > 600 ? 600 : seconds);
+        cfg->poll_seconds = radar_clamp_poll_seconds(seconds);
     }
     strlcpy(cfg->track_id, lv_textarea_get_text(s_ta_track), sizeof(cfg->track_id));
     cfg->track_on = lv_obj_has_state(s_sw_track, LV_STATE_CHECKED) && cfg->track_id[0] != '\0';

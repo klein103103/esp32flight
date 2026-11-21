@@ -11,6 +11,7 @@
 #include "fonts.h"
 #include "lang.h"
 #include "settings.h"
+#include "radar_preferences.h"
 #include "clock_fmt.h"
 #include "ui_photo.h"
 #include "geo_math.h"
@@ -599,8 +600,7 @@ static void aircraft_status_timer_cb(lv_timer_t *timer)
         return;
     }
     int64_t now_ms = esp_timer_get_time() / 1000;
-    if (s_aircraft_failure_ms >= 0 && !s_aircraft_cleared &&
-        now_ms - s_aircraft_failure_ms >= 60000) {
+    if (!s_aircraft_cleared && radar_stale_expired(s_aircraft_failure_ms, now_ms)) {
         s_aircraft_cleared = true;
         ui_update(NULL);
     }

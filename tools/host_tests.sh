@@ -229,4 +229,26 @@ cc -std=c11 -Wall -Wextra -Werror -o "$tmp/providers" "$tmp/providers.c"
 "$tmp/providers" third
 echo "provider tests passed"
 
+cat > "$tmp/preferences.c" <<'EOF'
+#include <assert.h>
+#include "radar_preferences.h"
+
+int main(void)
+{
+    assert(radar_clamp_poll_seconds(0) == 5);
+    assert(radar_clamp_poll_seconds(5) == 5);
+    assert(radar_clamp_poll_seconds(10) == 10);
+    assert(radar_clamp_poll_seconds(600) == 600);
+    assert(radar_clamp_poll_seconds(999) == 600);
+    assert(!radar_stale_expired(-1, 100000));
+    assert(!radar_stale_expired(5000, 4999));
+    assert(!radar_stale_expired(5000, 64999));
+    assert(radar_stale_expired(5000, 65000));
+    return 0;
+}
+EOF
+cc -std=c11 -Wall -Wextra -Werror -I main -o "$tmp/preferences" "$tmp/preferences.c"
+"$tmp/preferences"
+echo "settings and stale cutoff tests passed"
+
 echo "host tests passed"

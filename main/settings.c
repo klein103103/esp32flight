@@ -1,4 +1,5 @@
 #include "settings.h"
+#include "radar_preferences.h"
 
 #include "flight_model.h"
 #include "faflight.h"
@@ -128,7 +129,7 @@ void settings_load(void)
     }
     int32_t poll_seconds;
     if (nvs_get_i32(h, "poll_seconds", &poll_seconds) == ESP_OK &&
-        poll_seconds >= 5 && poll_seconds <= 600) {
+        radar_clamp_poll_seconds(poll_seconds) == poll_seconds) {
         s_settings.poll_seconds = poll_seconds;
     }
     uint8_t motion = 0;

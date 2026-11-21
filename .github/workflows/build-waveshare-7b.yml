@@ -24,6 +24,18 @@ jobs:
           bash tools/fetch_airports.sh
           bash tools/fetch_flags.sh
           idf.py -B build-7b -D IDF_TARGET=esp32s3 -D 'SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.board.7b' build
+      - name: Package private update files
+        shell: bash
+        run: |
+          mkdir -p ota-7b
+          cp build-7b/esp32flight.bin ota-7b/
+          python3 -c 'import json; p=json.load(open("build-7b/project_description.json")); assert p["project_version"].endswith("-7b"); print(json.dumps({"version":p["project_version"]}))' > ota-7b/manifest.json
+      - name: Upload private update files
+        uses: actions/upload-artifact@v4
+        with:
+          name: waveshare-7b-private-update
+          path: ota-7b/
+          if-no-files-found: error
       - name: Upload build files
         uses: actions/upload-artifact@v4
         with:
