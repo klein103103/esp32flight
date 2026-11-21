@@ -48,6 +48,7 @@ void ui_set_home(double lat, double lon);
 
 /* Session tracking radius. Safe to read from the aircraft fetch task. */
 int ui_radar_radius_nm(void);
+bool ui_radar_show_ground(void);
 unsigned ui_radar_area_revision(void);
 /* Read under the LVGL lock. False means use the saved Home area. */
 bool ui_radar_follow_center(double *lat, double *lon);

@@ -302,6 +302,12 @@ static lv_obj_t *s_radar_range;
 static lv_obj_t *s_radar_source;
 static bool s_radar_show_rings;
 static atomic_int s_radar_radius_nm = 25;
+static atomic_bool s_radar_show_ground;
+
+bool ui_radar_show_ground(void)
+{
+    return atomic_load_explicit(&s_radar_show_ground, memory_order_relaxed);
+}
 static atomic_uint s_radar_area_revision;
 static unsigned s_aircraft_area_revision;
 static bool s_radar_follow_map;
@@ -1798,6 +1804,14 @@ static void radar_group_cb(lv_event_t *event)
     }
 }
 
+static void radar_ground_cb(lv_event_t *event)
+{
+    atomic_store_explicit(&s_radar_show_ground,
+                          lv_obj_has_state(lv_event_get_target(event), LV_STATE_CHECKED),
+                          memory_order_relaxed);
+    radar_area_changed();
+}
+
 static void radar_follow_cb(lv_event_t *event)
 {
     s_radar_follow_map = lv_obj_has_state(lv_event_get_target(event), LV_STATE_CHECKED);
@@ -2068,6 +2082,14 @@ static void build_radar_panel(lv_obj_t *scr)
     lv_obj_t *follow_text = make_label(follow, UIFONT(&font_pl_14, &font_pl_8), COL_TEXT);
     lv_label_set_text(follow_text, "Follow Map");
     lv_obj_center(follow_text);
+    lv_obj_t *ground = lv_btn_create(s_radar_panel);
+    lv_obj_set_size(ground, UISX(106), UISY(32));
+    lv_obj_align(ground, LV_ALIGN_TOP_RIGHT, -UISX(366), UISY(8));
+    lv_obj_add_flag(ground, LV_OBJ_FLAG_CHECKABLE);
+    lv_obj_add_event_cb(ground, radar_ground_cb, LV_EVENT_VALUE_CHANGED, NULL);
+    lv_obj_t *ground_text = make_label(ground, UIFONT(&font_pl_14, &font_pl_8), COL_TEXT);
+    lv_label_set_text(ground_text, "Ground traffic");
+    lv_obj_center(ground_text);
     lv_obj_t *set_home = lv_btn_create(s_radar_panel);
     lv_obj_set_size(set_home, UISX(88), UISY(32));
     lv_obj_align(set_home, LV_ALIGN_TOP_LEFT, UISX(10), UISY(46));
@@ -2576,6 +2598,39 @@ static void render_radar_extras(bool map_mode, int radius_nm)
     }
 }
 
+static void radar_offline_airports(bool show, int radius_nm)
+{
+    enum { MAX_MARKERS = 12 };
+    static lv_obj_t *markers[MAX_MARKERS];
+    static airport_marker_t airports[MAX_MARKERS];
+    static double cached_lat, cached_lon;
+    static int cached_radius;
+    static size_t count;
+    double lat = s_radar_follow_map ? s_radar_center_lat : s_home_lat;
+    double lon = s_radar_follow_map ? s_radar_center_lon : s_home_lon;
+    if (show && s_home_ok && (lat != cached_lat || lon != cached_lon || radius_nm != cached_radius)) {
+        count = airports_nearby(lat, lon, radius_nm * 1.852, airports, MAX_MARKERS);
+        cached_lat = lat;
+        cached_lon = lon;
+        cached_radius = radius_nm;
+    }
+    for (size_t i = 0; i < MAX_MARKERS; i++) {
+        int x, y;
+        if (!show || i >= count || !radar_place(airports[i].lat, airports[i].lon,
+                                                airports[i].distance_km, false, radius_nm, &x, &y)) {
+            if (markers[i] != NULL) lv_obj_add_flag(markers[i], LV_OBJ_FLAG_HIDDEN);
+            continue;
+        }
+        if (markers[i] == NULL) {
+            markers[i] = make_label(s_radar_panel, UIFONT(&font_pl_14, &font_pl_8), COL_DIM);
+            lv_obj_clear_flag(markers[i], LV_OBJ_FLAG_CLICKABLE);
+        }
+        label_set_if_changed(markers[i], airports[i].code);
+        lv_obj_set_pos(markers[i], x + UISX(4), y + UISY(4));
+        lv_obj_clear_flag(markers[i], LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
 static void radar_display_position(const amb_target_t *target, double *lat, double *lon)
 {
     *lat = target->lat;
@@ -2642,6 +2697,7 @@ static void render_radar_panel(void)
         lv_label_set_text_fmt(s_radar_range, L()->ring_fmt, (int)(radius_nm * 1.852 / 3));
     }
 
+    radar_offline_airports(!map_mode, radius_nm);
     const aircraft_t *selac = (s_selected >= 0 && s_selected < s_shown_count)
                                   ? &s_shown[s_selected].ac : NULL;
     bool planes_on = view_shows_planes();
@@ -2658,7 +2714,8 @@ static void render_radar_panel(void)
             float distance_km = (float)geo_haversine_km(center_lat, center_lon, lat, lon);
             radar_point_t *point = &points[i];
             point->group = -1;
-            point->visible = radar_place(lat, lon, distance_km, map_mode, radius_nm, &point->x, &point->y);
+            point->visible = (!target->ground || ui_radar_show_ground()) &&
+                radar_place(lat, lon, distance_km, map_mode, radius_nm, &point->x, &point->y);
             bool selected = selac != NULL && strcmp(target->hex, selac->hex) == 0;
             if (!point->visible || !map_mode || selected || radius_nm * s_radar_zoom < 50.0 || distance_km < 46.3f) {
                 continue;

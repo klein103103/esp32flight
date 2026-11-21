@@ -1,4 +1,5 @@
 #include "airports.h"
+#include "geo_math.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -91,6 +92,28 @@ bool airports_nearest(double lat, double lon, char icao_out[5])
     memcpy(icao_out, s_idx[bi].icao, 4);
     icao_out[4] = '\0';
     return true;
+}
+
+size_t airports_nearby(double lat, double lon, double radius_km, airport_marker_t *out, size_t capacity)
+{
+    size_t count = 0;
+    if (capacity == 0) return 0;
+    for (int i = 0; i < s_count; i++) {
+        const apt_idx_t *airport = &s_idx[i];
+        double north = (airport->lat - lat) * 110.0;
+        if (north < -radius_km || north > radius_km) continue;
+        double distance = geo_haversine_km(lat, lon, airport->lat, airport->lon);
+        if (distance > radius_km || (count == capacity && distance >= out[count - 1].distance_km)) {
+            continue;
+        }
+        size_t at = count < capacity ? count++ : capacity - 1;
+        for (; at > 0 && out[at - 1].distance_km > distance; at--) {
+            out[at] = out[at - 1];
+        }
+        out[at] = (airport_marker_t){ .lat = airport->lat, .lon = airport->lon, .distance_km = distance };
+        memcpy(out[at].code, airport->icao, sizeof(airport->icao));
+    }
+    return count;
 }
 
 /* Read one line off flash and fill the airport record. */

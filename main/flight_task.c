@@ -873,12 +873,13 @@ static void flight_task(void *arg)
             consecutive_failures = 0;
 
             const settings_t *cfg = settings_get();
-            if (!tracking && (cfg->hide_ground ||
+            bool hide_ground = !ui_radar_show_ground();
+            if (!tracking && (hide_ground ||
                 (cfg->show_classes & FCLS_ALL_MASK) != FCLS_ALL_MASK)) {
                 int w = 0;
                 for (int i = 0; i < list->count; i++) {
                     const aircraft_t *ac = &list->ac[i];
-                    if (cfg->hide_ground && ac->on_ground) {
+                    if (hide_ground && ac->on_ground) {
                         continue;
                     }
                     if (!(cfg->show_classes & (1u << flight_class(ac)))) {
