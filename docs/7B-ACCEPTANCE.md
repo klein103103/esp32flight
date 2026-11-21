@@ -22,7 +22,7 @@ To preload a photo you have permission to use, put a JPEG under `radar/photos` o
 - [ ] Confirm the initial radar view opens at Home, fits 25 NM, and starts with Follow Map, ground traffic, and map rings off.
 - [ ] Set Home using an airport code, coordinates, and a panned map center. Reboot and confirm Home persists.
 - [ ] Try each range preset. Pan in Fixed Area mode, then turn on Follow Map and check loading and overlap behavior. Use Home to reframe the selected radius.
-- [ ] At wide range in dense traffic, tap a cluster. Check that zoom reveals individual aircraft and callsigns appear where space permits.
+- [ ] At wide range or where aircraft icons overlap, check that each group uses a normal aircraft icon. Tap it to zoom in and check that individual callsigns appear where space permits.
 - [ ] Tap an aircraft. Inspect live values, then open **More** and confirm route, airframe and photo requests complete or show an unavailable state.
 - [ ] Change the refresh interval and restart. Exercise all three motion modes.
 - [ ] Confirm primary provider and snapshot age on the map. On a controlled router or test network, temporarily block only the primary hostname, observe fallback, then remove the block and observe recovery. Avoid repeated live fallback requests.

@@ -289,9 +289,9 @@ static lv_obj_t *s_gear_label;
 static lv_obj_t *s_radar_panel;
 static lv_obj_t *s_radar_dots[MAX_AIRCRAFT];
 static lv_obj_t *s_radar_callsigns[MAX_AIRCRAFT];
-static lv_obj_t *s_radar_group_labels[MAX_AIRCRAFT];
+static int s_radar_marker_group[MAX_AIRCRAFT];
 typedef struct {
-    int cell_x, cell_y, x_sum, y_sum, count;
+    int cell_x, cell_y, representative, count;
     double lat_sum, lon_ref, lon_sum;
 } radar_group_t;
 static radar_group_t s_radar_groups[MAX_AIRCRAFT];
@@ -1774,12 +1774,15 @@ static void radar_zoom_cb(lv_event_t *e)
     radar_tiles_want();
 }
 
+static bool radar_zoom_to_group(int index);
+
 static void radar_dot_cb(lv_event_t *event)
 {
     int i = (int)(intptr_t)lv_event_get_user_data(event);
     if (i < 0 || i >= s_all_count || !s_all[i].hex[0]) {
         return;
     }
+    if (radar_zoom_to_group(s_radar_marker_group[i])) return;
     if (strcmp(s_selected_hex, s_all[i].hex) == 0 && s_sel_ship_mmsi == 0) {
         s_radar_bub_off = !s_radar_bub_off;
     } else {
@@ -1811,11 +1814,11 @@ static void radar_area_changed(void)
     render_list_rows();
 }
 
-static void radar_group_cb(lv_event_t *event)
+static bool radar_zoom_to_group(int index)
 {
-    int index = (int)(intptr_t)lv_event_get_user_data(event);
-    if (index < 0 || index >= s_radar_group_count || s_radar_groups[index].count < 2) {
-        return;
+    if (index < 0 || index >= s_radar_group_count ||
+        s_radar_groups[index].count < 2 || s_radar_zoom <= 0.181) {
+        return false;
     }
     const radar_group_t *group = &s_radar_groups[index];
     s_radar_center_lat = group->lat_sum / group->count;
@@ -1826,6 +1829,7 @@ static void radar_group_cb(lv_event_t *event)
     } else {
         render_radar_panel();
     }
+    return true;
 }
 
 static void radar_ground_cb(lv_event_t *event)
@@ -2773,10 +2777,11 @@ static void render_radar_panel(void)
             point->visible = (!target->ground || ui_radar_show_ground()) &&
                 radar_place(lat, lon, distance_km, map_mode, radius_nm, &point->x, &point->y);
             bool selected = s_selected_hex[0] && strcmp(target->hex, s_selected_hex) == 0;
-            if (!point->visible || !map_mode || selected || radius_nm * s_radar_zoom < 50.0 || distance_km < 46.3f) {
-                continue;
-            }
-            int cell_x = point->x / UISX(56), cell_y = point->y / UISY(48);
+            if (!point->visible || selected) continue;
+            bool wide = radius_nm * s_radar_zoom >= 50.0 && distance_km >= 46.3f;
+            int cell_x = point->x / UISX(wide ? 48 : 26);
+            int cell_y = point->y / UISY(wide ? 40 : 26);
+            if (wide) cell_x += RADAR_W;
             int group_index = 0;
             for (; group_index < s_radar_group_count; group_index++) {
                 if (s_radar_groups[group_index].cell_x == cell_x && s_radar_groups[group_index].cell_y == cell_y) {
@@ -2785,47 +2790,28 @@ static void render_radar_panel(void)
             }
             radar_group_t *group = &s_radar_groups[group_index];
             if (group_index == s_radar_group_count) {
-                *group = (radar_group_t){ .cell_x = cell_x, .cell_y = cell_y, .lon_ref = lon };
+                *group = (radar_group_t){ .cell_x = cell_x, .cell_y = cell_y,
+                                          .representative = i, .lon_ref = lon };
                 s_radar_group_count++;
             }
-            group->x_sum += point->x;
-            group->y_sum += point->y;
             group->lat_sum += lat;
             group->lon_sum += geo_lon_unwrap(group->lon_ref, lon);
             group->count++;
             point->group = group_index;
         }
     }
-    for (int i = 0; i < MAX_AIRCRAFT; i++) {
-        lv_obj_t *label = s_radar_group_labels[i];
-        if (i >= s_radar_group_count || s_radar_groups[i].count < 2) {
-            if (label != NULL) lv_obj_add_flag(label, LV_OBJ_FLAG_HIDDEN);
-            continue;
-        }
-        const radar_group_t *group = &s_radar_groups[i];
-        if (label == NULL) {
-            label = s_radar_group_labels[i] = make_label(s_radar_panel, UIFONT(&font_pl_14, &font_pl_8), COL_BG);
-            lv_obj_set_style_bg_color(label, COL_ACCENT, 0);
-            lv_obj_set_style_bg_opa(label, LV_OPA_COVER, 0);
-            lv_obj_set_style_pad_all(label, UISY(6), 0);
-            lv_obj_add_flag(label, LV_OBJ_FLAG_CLICKABLE);
-            lv_obj_add_event_cb(label, radar_group_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
-        }
-        char text[8];
-        snprintf(text, sizeof(text), "%d", group->count);
-        label_set_if_changed(label, text);
-        lv_obj_set_pos(label, group->x_sum / group->count - UISX(12), group->y_sum / group->count - UISY(12));
-        lv_obj_clear_flag(label, LV_OBJ_FLAG_HIDDEN);
-    }
     int label_x[MAX_AIRCRAFT], label_y[MAX_AIRCRAFT], label_count = 0;
     for (int i = 0; i < MAX_AIRCRAFT; i++) {
         if (s_radar_callsigns[i] != NULL) {
             lv_obj_add_flag(s_radar_callsigns[i], LV_OBJ_FLAG_HIDDEN);
         }
-        if (!points[i].visible || (points[i].group >= 0 && s_radar_groups[points[i].group].count > 1)) {
+        s_radar_marker_group[i] = -1;
+        int group = points[i].group;
+        if (!points[i].visible || (group >= 0 && s_radar_groups[group].representative != i)) {
             lv_obj_add_flag(s_radar_dots[i], LV_OBJ_FLAG_HIDDEN);
             continue;
         }
+        if (group >= 0 && s_radar_groups[group].count > 1) s_radar_marker_group[i] = group;
         const amb_target_t *t = &s_all[i];
         int x = points[i].x, y = points[i].y;
         bool sel = s_selected_hex[0] && strcmp(t->hex, s_selected_hex) == 0;
@@ -2837,7 +2823,7 @@ static void render_radar_panel(void)
                                alt_color(t->alt_ft, t->ground));
         lv_obj_clear_flag(s_radar_dots[i], LV_OBJ_FLAG_HIDDEN);
         int lx = x + UISX(12), ly = y - UISY(22);
-        bool label_fits = !sel && t->callsign[0] && lx >= 0 && lx + UISX(70) < RADAR_W && ly >= UISY(44);
+        bool label_fits = !sel && s_radar_marker_group[i] < 0 && t->callsign[0] && lx >= 0 && lx + UISX(70) < RADAR_W && ly >= UISY(44);
         for (int j = 0; label_fits && j < label_count; j++) {
             label_fits = abs(lx - label_x[j]) >= UISX(70) || abs(ly - label_y[j]) >= UISY(18);
         }
