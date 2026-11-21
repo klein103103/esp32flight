@@ -12,6 +12,9 @@ esp_err_t http_get_to_buffer(const char *url, char *buf, size_t buf_size, size_t
 esp_err_t http_get_to_buffer_t(const char *url, char *buf, size_t buf_size, size_t *out_len,
                                int timeout_ms);
 
+/* Rate-limited GET with no automatic retry. Returns Retry-After seconds, or 0. */
+esp_err_t http_get_rate_limited(const char *url, char *buf, size_t size, int *retry_after_seconds);
+
 /* Same, with one extra request header (e.g. an API key). */
 esp_err_t http_get_to_buffer_hdr(const char *url, char *buf, size_t buf_size, size_t *out_len,
                                  const char *hdr_key, const char *hdr_val);

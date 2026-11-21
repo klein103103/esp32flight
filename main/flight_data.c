@@ -354,8 +354,14 @@ static esp_err_t fetch_internet(double lat, double lon, int radius_nm,
     now_ms = esp_timer_get_time() / 1000;
     snprintf(url, sizeof(url), "https://api.adsb.lol/v2/point/%.4f/%.4f/%d",
              lat, lon, radius_nm);
-    err = http_get_keepalive(1, url, buf, FETCH_BUF_SIZE, NULL);
+    int retry_after_seconds;
+    err = http_get_rate_limited(url, buf, FETCH_BUF_SIZE, &retry_after_seconds);
     fallback_retry_at_ms = provider_retry_at(err, now_ms, now_ms + FALLBACK_INTERVAL_MS);
+    if (err == ESP_ERR_HTTP_BASE + 429 && retry_after_seconds > 0) {
+        int64_t retry_ms = (int64_t)retry_after_seconds * 1000;
+        fallback_retry_at_ms = now_ms + (retry_ms > FALLBACK_INTERVAL_MS
+                                        ? retry_ms : FALLBACK_INTERVAL_MS);
+    }
     if (err == ESP_OK) {
         err = parse_point_response(buf, lat, lon, out);
     }

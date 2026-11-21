@@ -3,6 +3,7 @@
 #include "http_util.h"
 
 #include <curl/curl.h>
+#include <limits.h>
 #include <pthread.h>
 #include <stdbool.h>
 #include <string.h>
@@ -16,6 +17,7 @@ typedef struct {
     size_t cap;
     size_t len;
     bool   overflow;
+    curl_off_t retry_after;
 } sink_t;
 
 static size_t write_cb(char *data, size_t size, size_t nmemb, void *user)
@@ -73,6 +75,9 @@ static esp_err_t finish(CURL *c, struct curl_slist *hdrs, sink_t *sink,
     CURLcode rc = curl_easy_perform(c);
     long status = 0;
     curl_easy_getinfo(c, CURLINFO_RESPONSE_CODE, &status);
+    if (sink != NULL && status == 429) {
+        curl_easy_getinfo(c, CURLINFO_RETRY_AFTER, &sink->retry_after);
+    }
     curl_easy_cleanup(c);
     if (hdrs != NULL) {
         curl_slist_free_all(hdrs);
@@ -94,6 +99,21 @@ static esp_err_t finish(CURL *c, struct curl_slist *hdrs, sink_t *sink,
         return ESP_ERR_NO_MEM;
     }
     return ESP_OK;
+}
+
+esp_err_t http_get_rate_limited(const char *url, char *buf, size_t size, int *retry_after_seconds)
+{
+    *retry_after_seconds = 0;
+    sink_t sink = { .buf = buf, .cap = size };
+    CURL *c = mk_handle(url, &sink);
+    if (c == NULL) {
+        return ESP_FAIL;
+    }
+    esp_err_t err = finish(c, NULL, &sink, url);
+    if (sink.retry_after > 0) {
+        *retry_after_seconds = sink.retry_after > INT_MAX ? INT_MAX : (int)sink.retry_after;
+    }
+    return err;
 }
 
 esp_err_t http_get_to_buffer_t(const char *url, char *buf, size_t buf_size,

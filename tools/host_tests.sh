@@ -116,6 +116,7 @@ typedef struct { const char *source; unsigned count; } aircraft_list_t;
 static int64_t clock_ms;
 static int calls[2];
 static int replies[2];
+static int retry_after;
 
 static int64_t esp_timer_get_time(void) { return clock_ms * 1000; }
 
@@ -128,6 +129,12 @@ static int http_get_keepalive(int slot, const char *url, char *buf,
     calls[slot]++;
     snprintf(buf, size, "empty aircraft list");
     return replies[slot];
+}
+
+static int http_get_rate_limited(const char *url, char *buf, size_t size, int *retry)
+{
+    *retry = retry_after;
+    return http_get_keepalive(1, url, buf, size, NULL);
 }
 
 static int parse_point_response(const char *buf, double lat, double lon,
@@ -159,6 +166,18 @@ int main(int argc, char **argv)
         clock_ms = 180000;
         assert(fetch_internet(0, 0, 25, &out, buf) == ESP_OK);
         assert(calls[0] == 1 && calls[1] == 2);
+        replies[1] = ESP_ERR_HTTP_BASE + 429;
+        retry_after = 600;
+        clock_ms = 360000;
+        assert(fetch_internet(0, 0, 25, &out, buf) != ESP_OK);
+        assert(calls[1] == 3);
+        replies[1] = ESP_OK;
+        clock_ms = 959999;
+        assert(fetch_internet(0, 0, 25, &out, buf) != ESP_OK);
+        assert(calls[1] == 3);
+        clock_ms = 960000;
+        assert(fetch_internet(0, 0, 25, &out, buf) == ESP_OK);
+        assert(calls[1] == 4);
     } else {
         assert(fetch_internet(0, 0, 25, &out, buf) == ESP_OK);
         assert(out.count == 0 && strcmp(out.source, "adsb.fi") == 0);

@@ -1,6 +1,9 @@
 #include "http_util.h"
 
+#include <limits.h>
+#include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include "esp_http_client.h"
 #include "esp_crt_bundle.h"
 #include "esp_log.h"
@@ -12,11 +15,21 @@ typedef struct {
     size_t  cap;
     size_t  len;
     bool    overflow;
+    int     retry_after_seconds;
 } sink_t;
 
 static esp_err_t http_event_cb(esp_http_client_event_t *evt)
 {
     sink_t *s = evt->user_data;
+    if (evt->event_id == HTTP_EVENT_ON_HEADER && s != NULL &&
+        evt->header_key != NULL && evt->header_value != NULL &&
+        strcasecmp(evt->header_key, "Retry-After") == 0) {
+        char *end;
+        long value = strtol(evt->header_value, &end, 10);
+        if (end != evt->header_value && *end == '\0' && value > 0) {
+            s->retry_after_seconds = value > INT_MAX ? INT_MAX : (int)value;
+        }
+    }
     if (evt->event_id == HTTP_EVENT_ON_DATA && s != NULL) {
         size_t space = s->cap - 1 - s->len;
         size_t n = evt->data_len;
@@ -36,22 +49,28 @@ esp_err_t http_get_to_buffer(const char *url, char *buf, size_t buf_size, size_t
 }
 
 static esp_err_t get_with_hdr_t(const char *url, char *buf, size_t buf_size, size_t *out_len,
-                                const char *hdr_key, const char *hdr_val, int timeout_ms);
+                                const char *hdr_key, const char *hdr_val, int timeout_ms, int *retry_after);
 
 esp_err_t http_get_to_buffer_t(const char *url, char *buf, size_t buf_size, size_t *out_len,
                                int timeout_ms)
 {
-    return get_with_hdr_t(url, buf, buf_size, out_len, NULL, NULL, timeout_ms);
+    return get_with_hdr_t(url, buf, buf_size, out_len, NULL, NULL, timeout_ms, NULL);
 }
 
 esp_err_t http_get_to_buffer_hdr(const char *url, char *buf, size_t buf_size, size_t *out_len,
                                  const char *hdr_key, const char *hdr_val)
 {
-    return get_with_hdr_t(url, buf, buf_size, out_len, hdr_key, hdr_val, 12000);
+    return get_with_hdr_t(url, buf, buf_size, out_len, hdr_key, hdr_val, 12000, NULL);
+}
+
+esp_err_t http_get_rate_limited(const char *url, char *buf, size_t size, int *retry_after_seconds)
+{
+    *retry_after_seconds = 0;
+    return get_with_hdr_t(url, buf, size, NULL, NULL, NULL, 12000, retry_after_seconds);
 }
 
 static esp_err_t get_with_hdr_t(const char *url, char *buf, size_t buf_size, size_t *out_len,
-                                const char *hdr_key, const char *hdr_val, int timeout_ms)
+                                const char *hdr_key, const char *hdr_val, int timeout_ms, int *retry_after)
 {
     sink_t sink = { .buf = buf, .cap = buf_size, .len = 0, .overflow = false };
 
@@ -79,6 +98,9 @@ static esp_err_t get_with_hdr_t(const char *url, char *buf, size_t buf_size, siz
     buf[sink.len] = '\0';
     if (out_len != NULL) {
         *out_len = sink.len;
+    }
+    if (retry_after != NULL && status == 429) {
+        *retry_after = sink.retry_after_seconds;
     }
 
     if (err != ESP_OK) {
