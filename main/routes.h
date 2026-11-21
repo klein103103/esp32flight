@@ -2,8 +2,8 @@
 
 #include "flight_model.h"
 
-/* Direct adsbdb lookup into caller-owned storage. Call from a worker. */
-bool routes_lookup_adsbdb(const char *callsign, route_info_t *out);
+/* On-demand route lookup using stock sources and caller-owned storage. */
+bool routes_lookup_details(const aircraft_t *aircraft, route_info_t *out);
 
 /* Cached route lookup. Returns entry (valid or negative-cached) or NULL if
  * this callsign has not been fetched yet. */

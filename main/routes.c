@@ -394,19 +394,37 @@ static esp_err_t adsbdb_route(char *buf, const char *callsign, route_info_t *out
     return ESP_OK;
 }
 
-bool routes_lookup_adsbdb(const char *callsign, route_info_t *out)
+bool routes_lookup_details(const aircraft_t *aircraft, route_info_t *out)
 {
+    const char *callsign = aircraft->callsign;
     memset(out, 0, sizeof(*out));
-    if (!callsign[0] || strspn(callsign, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789") != strlen(callsign)) {
+    if (!callsign[0] ||
+        strspn(callsign, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789") != strlen(callsign)) {
         return false;
     }
     char *buffer = malloc(8192);
-    if (buffer == NULL) {
-        return false;
+    if (buffer == NULL) return false;
+    strlcpy(out->callsign, callsign, sizeof(out->callsign));
+
+    /* Share the stock providers and position checks without changing the
+     * flight task's route cache from this worker. */
+    for (int provider = 0; provider < 3; provider++) {
+        if (provider == 0) {
+            lol_routeset(buffer, out, aircraft->lat, aircraft->lon, aircraft->has_pos);
+        } else if (provider == 1) {
+            adsbdb_route(buffer, callsign, out);
+        } else {
+            hexdb_fallback(buffer, out);
+        }
+        if (route_fits_position(out, aircraft->lat, aircraft->lon, aircraft->has_pos,
+                                aircraft->track_deg, aircraft->gs_kts, aircraft->baro_rate_fpm)) {
+            break;
+        }
+        memset(out, 0, sizeof(*out));
+        strlcpy(out->callsign, callsign, sizeof(out->callsign));
     }
-    bool valid = adsbdb_route(buffer, callsign, out) == ESP_OK && out->valid;
     free(buffer);
-    return valid;
+    return out->valid;
 }
 
 const route_info_t *routes_fetch(const char *callsign,

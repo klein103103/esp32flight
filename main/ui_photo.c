@@ -51,7 +51,7 @@ static void close_cb(lv_event_t *e)
 
 typedef struct {
     char hex[8];
-    char callsign[12];
+    aircraft_t aircraft;
     bool show_details;
     bool photo_cached;
 } photo_req_t;
@@ -108,7 +108,7 @@ static int from_adsbdb(const char *hex, char urls[2][256], char *json, size_t jn
     cJSON *root = cJSON_Parse(json);
     const cJSON *resp = root ? cJSON_GetObjectItem(root, "response") : NULL;
     const cJSON *acj = resp ? cJSON_GetObjectItem(resp, "aircraft") : NULL;
-    const char *keys[2] = { "url_photo", "url_photo_thumbnail" };
+    const char *keys[2] = { "url_photo_thumbnail", "url_photo" };
     for (int i = 0; i < 2 && acj != NULL; i++) {
         const cJSON *ju = cJSON_GetObjectItem(acj, keys[i]);
         if (cJSON_IsString(ju) && ju->valuestring[0]) {
@@ -123,7 +123,7 @@ static int from_adsbdb(const char *hex, char urls[2][256], char *json, size_t jn
 static uint16_t *fetch_decode(const char *url, uint8_t *raw, int *w, int *h)
 {
     size_t len = 0;
-    esp_err_t err = http_get_to_buffer(url, (char *)raw, PHOTO_MAX_BYTES, &len);
+    esp_err_t err = http_get_to_buffer_t(url, (char *)raw, PHOTO_MAX_BYTES, &len, 6500);
     if (err != ESP_OK || len <= 4) {
         ESP_LOGW(TAG, "image fetch failed (%s): %s", esp_err_to_name(err), url);
         return NULL;
@@ -133,32 +133,42 @@ static uint16_t *fetch_decode(const char *url, uint8_t *raw, int *w, int *h)
     return px;
 }
 
-static void read_aircraft_details(const photo_req_t *req, char *buffer, size_t size)
+static void show_route_details(const photo_req_t *req, char *buffer, size_t size)
 {
     route_info_t route;
-    char route_text[96] = "Route unavailable";
-    if (routes_lookup_adsbdb(req->callsign, &route)) {
-        snprintf(route_text, sizeof(route_text), "%s > %s  %.48s",
+    char route_text[216] = "Departure and destination unavailable";
+    if (routes_lookup_details(&req->aircraft, &route)) {
+        snprintf(route_text, sizeof(route_text), "From: %s  %.44s\nTo: %s  %.44s\n%.42s",
                  route.origin.iata[0] ? route.origin.iata : route.origin.icao,
+                 route.origin.city[0] ? route.origin.city : route.origin.name,
                  route.destination.iata[0] ? route.destination.iata : route.destination.icao,
+                 route.destination.city[0] ? route.destination.city : route.destination.name,
                  route.airline_name);
     }
-    char identity[96] = "Aircraft details unavailable";
-    if (strlen(req->hex) == 6 && strspn(req->hex, "0123456789abcdefABCDEF") == 6) {
-        char url[96];
-        snprintf(url, sizeof(url), "https://hexdb.io/api/v2/aircraft/%s", req->hex);
-        if (http_get_to_buffer_t(url, buffer, size, NULL, 4000) == ESP_OK) {
-            cJSON *root = cJSON_Parse(buffer);
-            const cJSON *reg = cJSON_GetObjectItem(root, "registration");
-            const cJSON *type = cJSON_GetObjectItem(root, "type");
-            if (cJSON_IsString(reg) || cJSON_IsString(type)) {
-                snprintf(identity, sizeof(identity), "%.18s  %.64s",
-                         cJSON_IsString(reg) ? reg->valuestring : "Registration unknown",
-                         cJSON_IsString(type) ? type->valuestring : "Type unknown");
-            }
-            cJSON_Delete(root);
+    char identity[118];
+    const char *reg = req->aircraft.reg;
+    const char *type = req->aircraft.type_desc[0] ? req->aircraft.type_desc : req->aircraft.type_icao;
+    snprintf(identity, sizeof(identity), "Registration: %.18s  |  Aircraft: %.61s",
+             reg[0] ? reg : "—", type[0] ? type : "—");
+    if (lvgl_port_lock(-1)) {
+        if (s_overlay != NULL && s_aircraft_details != NULL) {
+            lv_label_set_text_fmt(s_aircraft_details, "%s\n%s", route_text, identity);
         }
+        lvgl_port_unlock();
     }
+    if (reg[0] && type[0]) return;
+    if (strlen(req->hex) != 6 || strspn(req->hex, "0123456789abcdefABCDEF") != 6) return;
+
+    char url[96];
+    snprintf(url, sizeof(url), "https://hexdb.io/api/v2/aircraft/%s", req->hex);
+    if (http_get_to_buffer_t(url, buffer, size, NULL, 3000) != ESP_OK) return;
+    cJSON *root = cJSON_Parse(buffer);
+    const cJSON *remote_reg = cJSON_GetObjectItem(root, "registration");
+    const cJSON *remote_type = cJSON_GetObjectItem(root, "type");
+    snprintf(identity, sizeof(identity), "Registration: %.18s  |  Aircraft: %.61s",
+             reg[0] ? reg : (cJSON_IsString(remote_reg) ? remote_reg->valuestring : "—"),
+             type[0] ? type : (cJSON_IsString(remote_type) ? remote_type->valuestring : "—"));
+    cJSON_Delete(root);
     if (lvgl_port_lock(-1)) {
         if (s_overlay != NULL && s_aircraft_details != NULL) {
             lv_label_set_text_fmt(s_aircraft_details, "%s\n%s", route_text, identity);
@@ -202,6 +212,9 @@ static void photo_task(void *arg)
         }
     }
 #endif
+    if (req->show_details && json != NULL) {
+        show_route_details(req, json, 8192);
+    }
     if (pixels == NULL && json != NULL && raw != NULL) {
         char url[256];
         if (from_planespotters(req->hex, url, sizeof(url), credit, sizeof(credit),
@@ -247,9 +260,7 @@ static void photo_task(void *arg)
         lvgl_port_unlock();
     }
     free(pixels);
-    if (req->show_details && json != NULL) {
-        read_aircraft_details(req, json, 8192);
-    } else if (req->show_details && lvgl_port_lock(-1)) {
+    if (req->show_details && json == NULL && lvgl_port_lock(-1)) {
         if (s_overlay != NULL && s_aircraft_details != NULL) {
             lv_label_set_text(s_aircraft_details, "Extra aircraft and route details unavailable");
         }
@@ -261,7 +272,8 @@ static void photo_task(void *arg)
     vTaskDelete(NULL);
 }
 
-static void open_photo_panel(const char *hex, const char *callsign, const char *live_details)
+static void open_photo_panel(const char *hex, const char *callsign, const char *live_details,
+                             const aircraft_t *aircraft)
 {
     bool show_details = live_details != NULL;
     if (s_overlay != NULL || s_busy) {
@@ -316,7 +328,7 @@ static void open_photo_panel(const char *hex, const char *callsign, const char *
     lv_obj_center(s_msg);
 
     s_img = lv_img_create(s_overlay);
-    lv_obj_align(s_img, LV_ALIGN_CENTER, 0, show_details ? UISY(38) : 0);
+    lv_obj_align(s_img, LV_ALIGN_CENTER, 0, show_details ? UISY(60) : 0);
     lv_obj_add_flag(s_img, LV_OBJ_FLAG_HIDDEN);
 
     s_credit = lv_label_create(s_overlay);
@@ -333,7 +345,7 @@ static void open_photo_panel(const char *hex, const char *callsign, const char *
     photo_req_t *req = malloc(sizeof(photo_req_t));
     if (req != NULL) {
         strlcpy(req->hex, hex, sizeof(req->hex));
-        strlcpy(req->callsign, callsign, sizeof(req->callsign));
+        if (aircraft != NULL) req->aircraft = *aircraft;
         req->show_details = show_details;
         req->photo_cached = photo_cached;
         s_busy = true;
@@ -351,10 +363,11 @@ static void open_photo_panel(const char *hex, const char *callsign, const char *
 
 void ui_photo_open(const char *hex, const char *callsign)
 {
-    open_photo_panel(hex, callsign, NULL);
+    open_photo_panel(hex, callsign, NULL, NULL);
 }
 
-void ui_aircraft_more_open(const char *hex, const char *callsign, const char *live_details)
+void ui_aircraft_more_open(const aircraft_t *aircraft, const char *live_details)
 {
-    open_photo_panel(hex, callsign[0] ? callsign : hex, live_details);
+    open_photo_panel(aircraft->hex, aircraft->callsign[0] ? aircraft->callsign : aircraft->hex,
+                     live_details, aircraft);
 }

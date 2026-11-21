@@ -761,7 +761,7 @@ static void list_aircraft_more(const aircraft_t *aircraft)
 {
     char summary[112];
     list_aircraft_summary(aircraft, summary, sizeof(summary));
-    ui_aircraft_more_open(aircraft->hex, aircraft->callsign, summary);
+    ui_aircraft_more_open(aircraft, summary);
 }
 
 static aircraft_t s_list_card_aircraft;
@@ -2083,7 +2083,15 @@ static void radar_more_cb(lv_event_t *event)
             snprintf(live_details, sizeof(live_details), "%s  |  %s  |  %.1f NM",
                      target->ground ? L()->ground : units_alt(target->alt_ft, altitude, sizeof(altitude)),
                      units_speed(target->speed_kts, speed, sizeof(speed)), (double)target->dist_nm);
-            ui_aircraft_more_open(target->hex, target->callsign, live_details);
+            aircraft_t snapshot = { .lat = target->lat, .lon = target->lon, .has_pos = true,
+                                    .gs_kts = target->speed_kts, .track_deg = target->track };
+            strlcpy(snapshot.hex, target->hex, sizeof(snapshot.hex));
+            strlcpy(snapshot.callsign, target->callsign, sizeof(snapshot.callsign));
+            if (s_selected >= 0 && s_selected < s_shown_count &&
+                strcmp(s_shown[s_selected].ac.hex, target->hex) == 0) {
+                snapshot = s_shown[s_selected].ac;
+            }
+            ui_aircraft_more_open(&snapshot, live_details);
             break;
         }
     }
