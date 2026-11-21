@@ -1924,6 +1924,15 @@ static void radar_rings_cb(lv_event_t *event)
     render_radar_panel();
 }
 
+static void radar_more_cb(lv_event_t *event)
+{
+    (void)event;
+    if (s_selected >= 0 && s_selected < s_shown_count) {
+        const aircraft_t *aircraft = &s_shown[s_selected].ac;
+        ui_aircraft_more_open(aircraft->hex, aircraft->callsign);
+    }
+}
+
 static void build_radar_panel(lv_obj_t *scr)
 {
     s_radar_panel = make_panel(scr);
@@ -1991,6 +2000,11 @@ static void build_radar_panel(lv_obj_t *scr)
     lv_obj_add_flag(s_radar_blogo, LV_OBJ_FLAG_HIDDEN);
     s_radar_info = make_label(s_radar_bub, UIFONT(&font_pl_14, &font_pl_8), COL_TEXT);
     lv_label_set_text(s_radar_info, "");
+    lv_obj_t *more = lv_btn_create(s_radar_bub);
+    lv_obj_add_event_cb(more, radar_more_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *more_text = make_label(more, UIFONT(&font_pl_14, &font_pl_8), COL_TEXT);
+    lv_label_set_text(more_text, "More");
+    lv_obj_center(more_text);
 
     lv_obj_t *rattr = make_label(s_radar_panel, UIFONT(&font_pl_14, &font_pl_8), COL_DIM);
     lv_label_set_text(rattr, map_attribution());

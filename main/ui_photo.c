@@ -16,6 +16,7 @@
 #include "lang.h"
 #include "lvgl_port.h"
 #include "theme.h"
+#include "routes.h"
 
 #define COL_BG     (app_theme()->bg)
 #define COL_PANEL  (app_theme()->panel)
@@ -29,6 +30,7 @@ static lv_obj_t *s_overlay;
 static lv_obj_t *s_img;
 static lv_obj_t *s_msg;
 static lv_obj_t *s_credit;
+static lv_obj_t *s_aircraft_details;
 static uint8_t *s_photo_buf;
 static lv_img_dsc_t s_photo_dsc;
 static bool s_busy;
@@ -44,6 +46,8 @@ static void close_cb(lv_event_t *e)
 
 typedef struct {
     char hex[8];
+    char callsign[12];
+    bool show_details;
 } photo_req_t;
 
 static const char *TAG = "photo";
@@ -123,6 +127,40 @@ static uint16_t *fetch_decode(const char *url, uint8_t *raw, int *w, int *h)
     return px;
 }
 
+static void read_aircraft_details(const photo_req_t *req, char *buffer, size_t size)
+{
+    route_info_t route;
+    char route_text[96] = "Route unavailable";
+    if (routes_lookup_adsbdb(req->callsign, &route)) {
+        snprintf(route_text, sizeof(route_text), "%s > %s  %.48s",
+                 route.origin.iata[0] ? route.origin.iata : route.origin.icao,
+                 route.destination.iata[0] ? route.destination.iata : route.destination.icao,
+                 route.airline_name);
+    }
+    char identity[96] = "Aircraft details unavailable";
+    if (strlen(req->hex) == 6 && strspn(req->hex, "0123456789abcdefABCDEF") == 6) {
+        char url[96];
+        snprintf(url, sizeof(url), "https://hexdb.io/api/v2/aircraft/%s", req->hex);
+        if (http_get_to_buffer_t(url, buffer, size, NULL, 4000) == ESP_OK) {
+            cJSON *root = cJSON_Parse(buffer);
+            const cJSON *reg = cJSON_GetObjectItem(root, "registration");
+            const cJSON *type = cJSON_GetObjectItem(root, "type");
+            if (cJSON_IsString(reg) || cJSON_IsString(type)) {
+                snprintf(identity, sizeof(identity), "%.18s  %.64s",
+                         cJSON_IsString(reg) ? reg->valuestring : "Registration unknown",
+                         cJSON_IsString(type) ? type->valuestring : "Type unknown");
+            }
+            cJSON_Delete(root);
+        }
+    }
+    if (lvgl_port_lock(-1)) {
+        if (s_overlay != NULL && s_aircraft_details != NULL) {
+            lv_label_set_text_fmt(s_aircraft_details, "%s\n%s", route_text, identity);
+        }
+        lvgl_port_unlock();
+    }
+}
+
 static void photo_task(void *arg)
 {
     photo_req_t *req = arg;
@@ -131,6 +169,9 @@ static void photo_task(void *arg)
     int w = 0, h = 0;
 
     char *json = malloc(8192);
+    if (req->show_details && json != NULL) {
+        read_aircraft_details(req, json, 8192);
+    }
     uint8_t *raw = heap_caps_malloc(PHOTO_MAX_BYTES, MALLOC_CAP_SPIRAM);
     if (json != NULL && raw != NULL) {
         char url[256];
@@ -187,7 +228,7 @@ static void photo_task(void *arg)
     vTaskDelete(NULL);
 }
 
-void ui_photo_open(const char *hex, const char *callsign)
+static void open_photo_panel(const char *hex, const char *callsign, bool show_details)
 {
     if (s_overlay != NULL || s_busy) {
         return;
@@ -220,6 +261,15 @@ void ui_photo_open(const char *hex, const char *callsign)
     lv_label_set_text(xl, LV_SYMBOL_CLOSE);
     lv_obj_center(xl);
 
+    s_aircraft_details = NULL;
+    if (show_details) {
+        s_aircraft_details = lv_label_create(s_overlay);
+        lv_obj_set_style_text_font(s_aircraft_details, UIFONT(&font_pl_14, &font_pl_8), 0);
+        lv_obj_set_style_text_color(s_aircraft_details, COL_TEXT, 0);
+        lv_obj_set_width(s_aircraft_details, LV_HOR_RES - UISX(40));
+        lv_obj_set_pos(s_aircraft_details, UISX(16), UISY(48));
+        lv_label_set_text(s_aircraft_details, "Loading aircraft and route details…");
+    }
     s_msg = lv_label_create(s_overlay);
     lv_obj_set_style_text_font(s_msg, UIFONT(&font_pl_20, &font_pl_12), 0);
     lv_obj_set_style_text_color(s_msg, COL_DIM, 0);
@@ -227,7 +277,7 @@ void ui_photo_open(const char *hex, const char *callsign)
     lv_obj_center(s_msg);
 
     s_img = lv_img_create(s_overlay);
-    lv_obj_center(s_img);
+    lv_obj_align(s_img, LV_ALIGN_CENTER, 0, show_details ? UISY(38) : 0);
     lv_obj_add_flag(s_img, LV_OBJ_FLAG_HIDDEN);
 
     s_credit = lv_label_create(s_overlay);
@@ -239,7 +289,27 @@ void ui_photo_open(const char *hex, const char *callsign)
     photo_req_t *req = malloc(sizeof(photo_req_t));
     if (req != NULL) {
         strlcpy(req->hex, hex, sizeof(req->hex));
+        strlcpy(req->callsign, callsign, sizeof(req->callsign));
+        req->show_details = show_details;
         s_busy = true;
-        xTaskCreate(photo_task, "photo", 8192, req, 3, NULL);
+        if (xTaskCreate(photo_task, "photo", 8192, req, 3, NULL) == pdPASS) {
+            return;
+        }
+        s_busy = false;
+        free(req);
     }
+    if (s_aircraft_details != NULL) {
+        lv_label_set_text(s_aircraft_details, "Aircraft and route details unavailable");
+    }
+    lv_label_set_text(s_msg, L()->no_photo);
+}
+
+void ui_photo_open(const char *hex, const char *callsign)
+{
+    open_photo_panel(hex, callsign, false);
+}
+
+void ui_aircraft_more_open(const char *hex, const char *callsign)
+{
+    open_photo_panel(hex, callsign, true);
 }

@@ -361,7 +361,7 @@ static esp_err_t adsbdb_route(char *buf, const char *callsign, route_info_t *out
 {
     char url[96];
     snprintf(url, sizeof(url), "https://api.adsbdb.com/v0/callsign/%s", callsign);
-    esp_err_t err = http_get_keepalive_t(3, url, buf, 8192, NULL, 5000);
+    esp_err_t err = http_get_to_buffer_t(url, buf, 8192, NULL, 5000);
     if (err != ESP_OK) {
         return err;
     }
@@ -392,6 +392,21 @@ static esp_err_t adsbdb_route(char *buf, const char *callsign, route_info_t *out
     }
     cJSON_Delete(root);
     return ESP_OK;
+}
+
+bool routes_lookup_adsbdb(const char *callsign, route_info_t *out)
+{
+    memset(out, 0, sizeof(*out));
+    if (!callsign[0] || strspn(callsign, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789") != strlen(callsign)) {
+        return false;
+    }
+    char *buffer = malloc(8192);
+    if (buffer == NULL) {
+        return false;
+    }
+    bool valid = adsbdb_route(buffer, callsign, out) == ESP_OK && out->valid;
+    free(buffer);
+    return valid;
 }
 
 const route_info_t *routes_fetch(const char *callsign,

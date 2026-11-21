@@ -915,7 +915,8 @@ static void flight_task(void *arg)
             /* How many enrichment lookups this cycle will actually hit the
              * network decides whether an early render pays off: with a warm
              * cache the cycle finishes in milliseconds anyway. */
-            int top = list->count < ROUTE_LOOKUP_TOP_N ? list->count : ROUTE_LOOKUP_TOP_N;
+            int top = fapt0[0] == '\0' ? 0 :
+                      (list->count < ROUTE_LOOKUP_TOP_N ? list->count : ROUTE_LOOKUP_TOP_N);
             int pending = 0;
             for (int i = 0; i < top; i++) {
                 const aircraft_t *ac = &list->ac[i];
