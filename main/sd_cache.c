@@ -10,6 +10,11 @@
 #include "esp_vfs_fat.h"
 #include "driver/sdmmc_host.h"
 #include "sdkconfig.h"
+#include "ff.h"
+
+#if CONFIG_CANFLIGHT_BOARD_WAVESHARE_7B && !FF_FS_EXFAT
+#error "The Waveshare 7B build must use exFAT-enabled FatFs"
+#endif
 
 static atomic_bool s_ready;
 static esp_err_t s_mount_result = ESP_ERR_INVALID_STATE;
