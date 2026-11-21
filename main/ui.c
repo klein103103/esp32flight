@@ -1759,6 +1759,40 @@ static void radar_pan_cb(lv_event_t *event)
     }
 }
 
+static void radar_save_home_cb(lv_event_t *event)
+{
+    lv_obj_t *box = lv_event_get_current_target(event);
+    if (lv_msgbox_get_active_btn(box) == 0) {
+        settings_t *cfg = settings_get();
+        cfg->use_fixed_loc = true;
+        cfg->lat = s_radar_center_lat;
+        cfg->lon = s_radar_center_lon;
+        settings_save();
+#ifdef APKFLIGHT
+        extern void apk_settings_touch(void);
+        apk_settings_touch();
+#else
+        esp_restart();
+#endif
+    }
+    lv_msgbox_close(box);
+}
+
+static void radar_set_home_cb(lv_event_t *event)
+{
+    (void)event;
+    if (!s_home_ok) {
+        return;
+    }
+    static const char *buttons[] = {"Set Home", "Cancel", ""};
+    char prompt[96];
+    snprintf(prompt, sizeof(prompt), "Save the map center as Home?\n%.4f, %.4f",
+             s_radar_center_lat, s_radar_center_lon);
+    lv_obj_t *box = lv_msgbox_create(NULL, "Set Home", prompt, buttons, false);
+    lv_obj_center(box);
+    lv_obj_add_event_cb(box, radar_save_home_cb, LV_EVENT_VALUE_CHANGED, NULL);
+}
+
 static void radar_home_cb(lv_event_t *event)
 {
     (void)event;
@@ -1918,6 +1952,13 @@ static void build_radar_panel(lv_obj_t *scr)
     lv_obj_t *follow_text = make_label(follow, UIFONT(&font_pl_14, &font_pl_8), COL_TEXT);
     lv_label_set_text(follow_text, "Follow Map");
     lv_obj_center(follow_text);
+    lv_obj_t *set_home = lv_btn_create(s_radar_panel);
+    lv_obj_set_size(set_home, UISX(88), UISY(32));
+    lv_obj_align(set_home, LV_ALIGN_TOP_LEFT, UISX(10), UISY(46));
+    lv_obj_add_event_cb(set_home, radar_set_home_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *set_home_text = make_label(set_home, UIFONT(&font_pl_14, &font_pl_8), COL_TEXT);
+    lv_label_set_text(set_home_text, "Set Home");
+    lv_obj_center(set_home_text);
 }
 
 /* ---------- optional extra objects: ISS, radiosondes, AIS ships ---------- */
