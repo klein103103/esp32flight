@@ -287,6 +287,14 @@ static lv_obj_t *s_gear_label;
 /* Radar view */
 static lv_obj_t *s_radar_panel;
 static lv_obj_t *s_radar_dots[MAX_AIRCRAFT];
+static lv_obj_t *s_radar_callsigns[MAX_AIRCRAFT];
+static lv_obj_t *s_radar_group_labels[MAX_AIRCRAFT];
+typedef struct {
+    int cell_x, cell_y, x_sum, y_sum, count;
+    double lat_sum, lon_ref, lon_sum;
+} radar_group_t;
+static radar_group_t s_radar_groups[MAX_AIRCRAFT];
+static int s_radar_group_count;
 static lv_obj_t *s_radar_info;
 static lv_obj_t *s_radar_bub, *s_radar_blogo;
 static bool s_radar_bub_off;   /* tapped away by the user (#9) */
@@ -1773,6 +1781,23 @@ static void radar_area_changed(void)
     render_list_rows();
 }
 
+static void radar_group_cb(lv_event_t *event)
+{
+    int index = (int)(intptr_t)lv_event_get_user_data(event);
+    if (index < 0 || index >= s_radar_group_count || s_radar_groups[index].count < 2) {
+        return;
+    }
+    const radar_group_t *group = &s_radar_groups[index];
+    s_radar_center_lat = group->lat_sum / group->count;
+    s_radar_center_lon = remainder(group->lon_sum / group->count, 360.0);
+    s_radar_zoom = fmax(0.18, s_radar_zoom * 0.55);
+    if (s_radar_follow_map) {
+        radar_area_changed();
+    } else {
+        render_radar_panel();
+    }
+}
+
 static void radar_follow_cb(lv_event_t *event)
 {
     s_radar_follow_map = lv_obj_has_state(lv_event_get_target(event), LV_STATE_CHECKED);
@@ -2606,24 +2631,77 @@ static void render_radar_panel(void)
     const aircraft_t *selac = (s_selected >= 0 && s_selected < s_shown_count)
                                   ? &s_shown[s_selected].ac : NULL;
     bool planes_on = view_shows_planes();
+    typedef struct { int x, y, group; bool visible; } radar_point_t;
+    radar_point_t points[MAX_AIRCRAFT] = {0};
+    s_radar_group_count = 0;
+    double center_lat = s_radar_follow_map ? s_radar_center_lat : s_home_lat;
+    double center_lon = s_radar_follow_map ? s_radar_center_lon : s_home_lon;
+    if (planes_on) {
+        for (int i = 0; i < s_all_count; i++) {
+            const amb_target_t *target = &s_all[i];
+            double lat, lon;
+            radar_display_position(target, &lat, &lon);
+            float distance_km = (float)geo_haversine_km(center_lat, center_lon, lat, lon);
+            radar_point_t *point = &points[i];
+            point->group = -1;
+            point->visible = radar_place(lat, lon, distance_km, map_mode, radius_nm, &point->x, &point->y);
+            bool selected = selac != NULL && strcmp(target->hex, selac->hex) == 0;
+            if (!point->visible || !map_mode || selected || radius_nm * s_radar_zoom < 50.0 || distance_km < 46.3f) {
+                continue;
+            }
+            int cell_x = point->x / UISX(56), cell_y = point->y / UISY(48);
+            int group_index = 0;
+            for (; group_index < s_radar_group_count; group_index++) {
+                if (s_radar_groups[group_index].cell_x == cell_x && s_radar_groups[group_index].cell_y == cell_y) {
+                    break;
+                }
+            }
+            radar_group_t *group = &s_radar_groups[group_index];
+            if (group_index == s_radar_group_count) {
+                *group = (radar_group_t){ .cell_x = cell_x, .cell_y = cell_y, .lon_ref = lon };
+                s_radar_group_count++;
+            }
+            group->x_sum += point->x;
+            group->y_sum += point->y;
+            group->lat_sum += lat;
+            group->lon_sum += geo_lon_unwrap(group->lon_ref, lon);
+            group->count++;
+            point->group = group_index;
+        }
+    }
     for (int i = 0; i < MAX_AIRCRAFT; i++) {
-        if (!planes_on || i >= s_all_count || s_all[i].dist_nm < 0) {
+        lv_obj_t *label = s_radar_group_labels[i];
+        if (i >= s_radar_group_count || s_radar_groups[i].count < 2) {
+            if (label != NULL) lv_obj_add_flag(label, LV_OBJ_FLAG_HIDDEN);
+            continue;
+        }
+        const radar_group_t *group = &s_radar_groups[i];
+        if (label == NULL) {
+            label = s_radar_group_labels[i] = make_label(s_radar_panel, UIFONT(&font_pl_14, &font_pl_8), COL_BG);
+            lv_obj_set_style_bg_color(label, COL_ACCENT, 0);
+            lv_obj_set_style_bg_opa(label, LV_OPA_COVER, 0);
+            lv_obj_set_style_pad_all(label, UISY(6), 0);
+            lv_obj_add_flag(label, LV_OBJ_FLAG_CLICKABLE);
+            lv_obj_add_event_cb(label, radar_group_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
+        }
+        char text[8];
+        snprintf(text, sizeof(text), "%d", group->count);
+        label_set_if_changed(label, text);
+        lv_obj_set_pos(label, group->x_sum / group->count - UISX(12), group->y_sum / group->count - UISY(12));
+        lv_obj_clear_flag(label, LV_OBJ_FLAG_HIDDEN);
+    }
+    int label_x[MAX_AIRCRAFT], label_y[MAX_AIRCRAFT], label_count = 0;
+    for (int i = 0; i < MAX_AIRCRAFT; i++) {
+        if (s_radar_callsigns[i] != NULL) {
+            lv_obj_add_flag(s_radar_callsigns[i], LV_OBJ_FLAG_HIDDEN);
+        }
+        if (!points[i].visible || (points[i].group >= 0 && s_radar_groups[points[i].group].count > 1)) {
             lv_obj_add_flag(s_radar_dots[i], LV_OBJ_FLAG_HIDDEN);
             continue;
         }
         const amb_target_t *t = &s_all[i];
-        int x, y;
-        double lat, lon;
-        radar_display_position(t, &lat, &lon);
-        double center_lat = s_radar_follow_map ? s_radar_center_lat : s_home_lat;
-        double center_lon = s_radar_follow_map ? s_radar_center_lon : s_home_lon;
-        float dist_km = (float)geo_haversine_km(center_lat, center_lon, lat, lon);
-        if (!radar_place(lat, lon, dist_km, map_mode, radius_nm, &x, &y)) {
-            lv_obj_add_flag(s_radar_dots[i], LV_OBJ_FLAG_HIDDEN);
-            continue;
-        }
-        bool sel = selac != NULL && selac->callsign[0] &&
-                   strcmp(t->callsign, selac->callsign) == 0;
+        int x = points[i].x, y = points[i].y;
+        bool sel = selac != NULL && strcmp(t->hex, selac->hex) == 0;
         lv_obj_set_pos(s_radar_dots[i], x - 14, y - 14);   /* UIZOOM keeps the 28px box */
         img_src_if_changed(s_radar_dots[i], class_sprite(t->fcls));
         lv_img_set_angle(s_radar_dots[i], (int)(t->track * 10));
@@ -2631,6 +2709,22 @@ static void render_radar_panel(void)
         img_recolor_if_changed(s_radar_dots[i],
                                alt_color(t->alt_ft, t->ground));
         lv_obj_clear_flag(s_radar_dots[i], LV_OBJ_FLAG_HIDDEN);
+        int lx = x + UISX(12), ly = y - UISY(22);
+        bool label_fits = !sel && t->callsign[0] && lx >= 0 && lx + UISX(70) < RADAR_W && ly >= UISY(44);
+        for (int j = 0; label_fits && j < label_count; j++) {
+            label_fits = abs(lx - label_x[j]) >= UISX(70) || abs(ly - label_y[j]) >= UISY(18);
+        }
+        if (label_fits) {
+            if (s_radar_callsigns[i] == NULL) {
+                s_radar_callsigns[i] = make_label(s_radar_panel, UIFONT(&font_pl_14, &font_pl_8), COL_TEXT);
+                lv_obj_clear_flag(s_radar_callsigns[i], LV_OBJ_FLAG_CLICKABLE);
+            }
+            label_set_if_changed(s_radar_callsigns[i], t->callsign);
+            lv_obj_set_pos(s_radar_callsigns[i], lx, ly);
+            lv_obj_clear_flag(s_radar_callsigns[i], LV_OBJ_FLAG_HIDDEN);
+            label_x[label_count] = lx;
+            label_y[label_count++] = ly;
+        }
 
         if (sel) {
             char info[96];
