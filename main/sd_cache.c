@@ -1,10 +1,12 @@
 #include "sd_cache.h"
 #include <stdatomic.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "esp_vfs_fat.h"
 #include "driver/sdmmc_host.h"
 #include "sdkconfig.h"
@@ -62,11 +64,16 @@ bool sd_cache_write_tile(const char *directory, const char *path,
                          const void *buffer, size_t size)
 {
     if (!sd_cache_ready()) return false;
-    uint64_t total, free_bytes;
-    if (esp_vfs_fat_info("/sd", &total, &free_bytes) != ESP_OK ||
-        free_bytes < UINT64_C(512) * 1024 * 1024 + size) {
-        return false;
+    /* The map worker is the only writer. Avoid rescanning FAT for each tile. */
+    static int64_t next_space_check;
+    static uint64_t free_bytes;
+    int64_t now = esp_timer_get_time();
+    if (now >= next_space_check) {
+        uint64_t total;
+        if (esp_vfs_fat_info("/sd", &total, &free_bytes) != ESP_OK) free_bytes = 0;
+        next_space_check = now + INT64_C(60000000);
     }
+    if (free_bytes < UINT64_C(512) * 1024 * 1024 + size) return false;
     mkdir(directory, 0775);
     char temporary[80];
     size_t len = strlen(path);
@@ -81,5 +88,6 @@ bool sd_cache_write_tile(const char *directory, const char *path,
         unlink(temporary);
         return false;
     }
+    free_bytes -= size;
     return true;
 }

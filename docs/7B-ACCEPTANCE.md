@@ -8,6 +8,12 @@ Target: ESP32-S3-Touch-LCD-7B, 1024 × 600. Keep the stock 7B installer availabl
 - The **waveshare-7b** artifact contains the bootloader, partitions, assets, application, and ESP-IDF flash arguments. The **waveshare-7b-private-update** artifact contains the application and its manifest.
 - For a private update server, serve the two private-update files in the same directory over HTTPS with a certificate trusted by the ESP32. Enter the directory URL in **Settings → System**. A newer release must increment the version in the root CMake configuration.
 
+## Optional SD cache
+
+Power the board off before inserting a FAT32 microSD card. The firmware never formats it. Reboot and check that `/api/state` shows `sd_cache_ready: true`. Open the radar normally to cache tiles you view. Visit the same view again, then repeat after a restart. If there is no usable card, the radar uses its onboard cache.
+
+To preload a photo you have permission to use, put a JPEG under `radar/photos` on the card. Name it with the aircraft's six-character ICAO hex address, for example `a0b7dc.jpg`, and keep each image under 512 KB. The radar checks that folder before requesting a photo online. OpenStreetMap public tiles are cached as you view them under their tile usage policy. Live positions are still fetched from the provider.
+
 ## On-device checks
 
 - [ ] Install the 7B build and confirm the panel starts cleanly, touch targets work, and hardware brightness changes.

@@ -544,7 +544,6 @@ static bool blit_tile(esp_http_client_handle_t client, tile_sink_t *sink,
             esp_http_client_close(client);
             return false;
         }
-        tcache_put(key, sink->buf, sink->len);
         fetch_buf = sink->buf;
         len = sink->len;
     }
@@ -647,9 +646,7 @@ static bool blit_tile(esp_http_client_handle_t client, tile_sink_t *sink,
 #endif
         ftile_put(key, fetch_buf, len);
     }
-#ifndef APKFLIGHT
-    if (from_cache && fetch_buf == sink->buf) tcache_put(key, fetch_buf, len);
-#endif
+    if (fetch_buf == sink->buf) tcache_put(key, fetch_buf, len);
     const bool light = settings_get()->map_light;
     /* hoisted: calling tile_source_is_osm() per pixel multiplied the
      * per-tile cost on every render (0.4.6 regression) */
