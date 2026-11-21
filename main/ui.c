@@ -122,6 +122,10 @@ static char s_selected_hex[ICAO_HEX_LEN];
 static lv_obj_t *s_status_label;
 static lv_obj_t *s_weather_label;
 static lv_obj_t *s_list_panel;
+#ifdef CONFIG_CANFLIGHT_BOARD_WAVESHARE_7B
+static lv_obj_t *s_radar_list_tab, *s_radar_list_tab_text;
+static bool s_radar_list_open = true;
+#endif
 static lv_obj_t *s_list_rows[MAX_SHOWN];
 static lv_obj_t *s_list_mode_btnm;
 static uint8_t s_list_mode;      /* 0 planes, 1 ships, 2 both (session only) */
@@ -386,7 +390,14 @@ static lv_obj_t     *s_retro_map_img;
 static uint16_t     *s_retro_map_buf;
 static lv_img_dsc_t  s_retro_map_dsc;
 static char          s_retro_map_key[48];
-#define RADAR_W  (SCR_W - LIST_W)
+#define RETRO_W (SCR_W - LIST_W)
+#ifdef CONFIG_CANFLIGHT_BOARD_WAVESHARE_7B
+#define RADAR_W SCR_W
+#define RADAR_LEFT 0
+#else
+#define RADAR_W RETRO_W
+#define RADAR_LEFT LIST_W
+#endif
 #define RADAR_H  (SCR_H - HEADER_H)
 #define RADAR_RENDER_W (SCR_W > 800 ? 800 - 310 : RADAR_W)
 #define RADAR_RENDER_H (SCR_W > 800 ? (RADAR_H * (800 - 310)) / RADAR_W : RADAR_H)
@@ -394,6 +405,8 @@ static char          s_retro_map_key[48];
 #define RADAR_CX (RADAR_W / 2)
 #define RADAR_CY (RADAR_H / 2 - UISY(6))
 #define RADAR_R  (LV_MIN(RADAR_CX, RADAR_CY) - UISY(25))
+#define RETRO_CX (RETRO_W / 2)
+#define RETRO_R (LV_MIN(RETRO_CX, RADAR_CY) - UISY(25))
 
 /* Radar map background (home-area tiles) */
 static uint16_t     *s_radar_tiles;
@@ -573,7 +586,7 @@ static void photo_click_cb(lv_event_t *e)
 {
     if (s_selected >= 0 && s_selected < s_shown_count) {
         const aircraft_t *ac = &s_shown[s_selected].ac;
-        ui_photo_open(ac->hex, ac->callsign[0] ? ac->callsign : ac->hex);
+        ui_photo_open(ac);
     }
 }
 
@@ -885,6 +898,46 @@ static void cycle_timer_cb(lv_timer_t *t)
 
 static void emb_release(void);
 
+#ifdef CONFIG_CANFLIGHT_BOARD_WAVESHARE_7B
+static void radar_apply_drawer(void)
+{
+    if (s_view_mode != VIEW_RADAR) {
+        lv_obj_add_flag(s_radar_list_tab, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(s_list_panel, LV_OBJ_FLAG_HIDDEN);
+        render_list_rows();
+        return;
+    }
+    if (s_radar_list_open) {
+        lv_obj_clear_flag(s_list_panel, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_move_foreground(s_list_panel);
+        render_list_rows();
+    } else {
+        lv_obj_add_flag(s_list_panel, LV_OBJ_FLAG_HIDDEN);
+    }
+    lv_obj_set_pos(s_radar_list_tab, s_radar_list_open ? LIST_W : 0,
+                   HEADER_H + UISY(124));
+    lv_label_set_text(s_radar_list_tab_text, s_radar_list_open ? LV_SYMBOL_LEFT : LV_SYMBOL_RIGHT);
+    lv_obj_clear_flag(s_radar_list_tab, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_move_foreground(s_radar_list_tab);
+}
+
+static void radar_drawer_cb(lv_event_t *event)
+{
+    if (s_view_mode != VIEW_RADAR) return;
+    if (lv_event_get_code(event) == LV_EVENT_GESTURE) {
+        lv_indev_t *input = lv_indev_get_act();
+        if (input == NULL) return;
+        lv_dir_t direction = lv_indev_get_gesture_dir(input);
+        if (direction != LV_DIR_LEFT && direction != LV_DIR_RIGHT) return;
+        lv_indev_wait_release(input);
+        s_radar_list_open = direction == LV_DIR_RIGHT;
+    } else {
+        s_radar_list_open = !s_radar_list_open;
+    }
+    radar_apply_drawer();
+}
+#endif
+
 static void apply_view(int mode)
 {
     int prev = s_view_mode;
@@ -934,6 +987,9 @@ static void apply_view(int mode)
         lv_timer_pause(s_cycle_timer);
         break;
     }
+#ifdef CONFIG_CANFLIGHT_BOARD_WAVESHARE_7B
+    radar_apply_drawer();
+#endif
     render_right();
 }
 
@@ -977,7 +1033,7 @@ void ui_set_view(int mode)
             if (mode == 5) {
                 ui_map_open(&sf->ac, rt);
             } else {
-                ui_photo_open(sf->ac.hex, sf->ac.callsign);
+                ui_photo_open(&sf->ac);
             }
         }
         return;
@@ -2175,7 +2231,7 @@ static void build_radar_panel(lv_obj_t *scr)
     lv_obj_add_event_cb(s_radar_panel, radar_pan_cb, LV_EVENT_RELEASED, NULL);
     lv_obj_add_event_cb(s_radar_panel, radar_pan_cb, LV_EVENT_PRESS_LOST, NULL);
     lv_obj_set_size(s_radar_panel, RADAR_W, RADAR_H);
-    lv_obj_set_pos(s_radar_panel, LIST_W, HEADER_H);
+    lv_obj_set_pos(s_radar_panel, RADAR_LEFT, HEADER_H);
     lv_obj_set_style_bg_color(s_radar_panel, COL_BG, 0);
     lv_obj_add_flag(s_radar_panel, LV_OBJ_FLAG_HIDDEN);
 
@@ -3566,7 +3622,7 @@ static void amb_show(void)
             lv_timer_resume(s_retro_timer);
         }
         lv_obj_set_parent(s_retro_panel, s_amb);
-        lv_obj_set_pos(s_retro_panel, (SCR_W - RADAR_W) / 2, (SCR_H - RADAR_H) / 2);
+        lv_obj_set_pos(s_retro_panel, (SCR_W - RETRO_W) / 2, (SCR_H - RADAR_H) / 2);
         lv_obj_clear_flag(s_retro_panel, LV_OBJ_FLAG_HIDDEN);
         render_retro_panel();
         return;
@@ -3759,7 +3815,7 @@ static void idle_timer_cb(lv_timer_t *t)
 
 static void retro_rain_job(void)
 {
-    int w = RADAR_W, h = RADAR_H;
+    int w = RETRO_W, h = RADAR_H;
     if (s_retro_rain_buf == NULL) {
         s_retro_rain_buf = heap_caps_malloc((size_t)w * h * 2, MALLOC_CAP_SPIRAM);
     }
@@ -3820,7 +3876,7 @@ static void retro_timer_cb(lv_timer_t *t)
         s_retro_angle -= 360.0f;
     }
 
-    int cx = RADAR_CX, cy = RADAR_CY, r = RADAR_R;
+    int cx = RETRO_CX, cy = RADAR_CY, r = RETRO_R;
     for (int k = 0; k < RETRO_TRAIL; k++) {
         float a = (s_retro_angle - k * 2.0f) * (float)M_PI / 180.0f;
         s_retro_beam_pts[k][0].x = cx;
@@ -3890,7 +3946,7 @@ static void retro_map_update(void)
         return;
     }
     if (s_retro_map_buf == NULL) {
-        s_retro_map_buf = heap_caps_malloc((size_t)RADAR_W * RADAR_H * 2,
+        s_retro_map_buf = heap_caps_malloc((size_t)RETRO_W * RADAR_H * 2,
                                            MALLOC_CAP_SPIRAM);
     }
     if (s_retro_map_buf == NULL || s_radar_tiles == NULL) {
@@ -3904,7 +3960,7 @@ static void retro_map_update(void)
     if (radius_px < 10.0f) {
         return;
     }
-    float k = radius_px / (float)RADAR_R;   /* panel px per scope px */
+    float k = radius_px / (float)RETRO_R;   /* panel px per scope px */
     /* Land/water classification (CARTO dark_all is grayscale: land
      * #090909, roads mid grays, water #262626). "Brighter map tiles"
      * lifts v += 30% of headroom at decode - undo it first, or the
@@ -3919,15 +3975,15 @@ static void retro_map_update(void)
      * clipped to the scope circle, dim enough for blips to stay on top. */
     const settings_t *rcfg = settings_get();
     const bool phosphor = rcfg->tile_url[0] != '\0' || rcfg->carto_key[0] == '\0';
-    const int r2 = RADAR_R * RADAR_R;
+    const int r2 = RETRO_R * RETRO_R;
     for (int y = 0; phosphor && y < RADAR_H; y++) {
-        uint16_t *dst = &s_retro_map_buf[y * RADAR_W];
+        uint16_t *dst = &s_retro_map_buf[y * RETRO_W];
         float sy = hy + (y - RADAR_CY) * k;
         int dy = y - RADAR_CY;
-        for (int x = 0; x < RADAR_W; x++) {
-            int dx = x - RADAR_CX;
+        for (int x = 0; x < RETRO_W; x++) {
+            int dx = x - RETRO_CX;
             uint16_t out = 0;
-            float sx = hx + (x - RADAR_CX) * k;
+            float sx = hx + (x - RETRO_CX) * k;
             int isx = (int)(RADAR_RENDER_W / 2 + (sx - RADAR_W / 2) / RADAR_K);
             int isy = (int)(RADAR_RENDER_H / 2 + (sy - RADAR_H / 2) / RADAR_K);
             if (dx * dx + dy * dy <= r2 &&
@@ -3946,10 +4002,10 @@ static void retro_map_update(void)
         }
     }
     for (int y = 0; !phosphor && y < RADAR_H; y++) {
-        uint16_t *dst = &s_retro_map_buf[y * RADAR_W];
+        uint16_t *dst = &s_retro_map_buf[y * RETRO_W];
         float sy = hy + (y - RADAR_CY) * k;
-        for (int x = 0; x < RADAR_W; x++) {
-            float sx = hx + (x - RADAR_CX) * k;
+        for (int x = 0; x < RETRO_W; x++) {
+            float sx = hx + (x - RETRO_CX) * k;
             uint16_t out = 0;
             /* panel space -> tile render space (identity when RADAR_K is 1) */
             int isx = (int)(RADAR_RENDER_W / 2 + (sx - RADAR_W / 2) / RADAR_K);
@@ -3985,10 +4041,10 @@ static void retro_map_update(void)
     }
     s_retro_map_dsc.header.always_zero = 0;
     s_retro_map_dsc.header.cf = LV_IMG_CF_TRUE_COLOR;
-    s_retro_map_dsc.header.w = RADAR_W;
+    s_retro_map_dsc.header.w = RETRO_W;
     s_retro_map_dsc.header.h = RADAR_H;
     s_retro_map_dsc.data = (const uint8_t *)s_retro_map_buf;
-    s_retro_map_dsc.data_size = (size_t)RADAR_W * RADAR_H * 2;
+    s_retro_map_dsc.data_size = (size_t)RETRO_W * RADAR_H * 2;
     lv_img_set_src(s_retro_map_img, &s_retro_map_dsc);
     lv_obj_clear_flag(s_retro_map_img, LV_OBJ_FLAG_HIDDEN);
     strlcpy(s_retro_map_key, s_radar_key, sizeof(s_retro_map_key));
@@ -3997,7 +4053,7 @@ static void retro_map_update(void)
 
 static void render_retro_panel(void)
 {
-    int cx = RADAR_CX, cy = RADAR_CY, r = RADAR_R;
+    int cx = RETRO_CX, cy = RADAR_CY, r = RETRO_R;
     int radius_nm = settings_get()->radius_nm;
     if (settings_get()->retro_map) {
         radar_tiles_want();   /* scope wants the canvas even if radar view never opened */
@@ -4062,12 +4118,12 @@ static void render_retro_panel(void)
 static void build_retro_panel(lv_obj_t *scr)
 {
     s_retro_panel = make_panel(scr);
-    lv_obj_set_size(s_retro_panel, RADAR_W, RADAR_H);
+    lv_obj_set_size(s_retro_panel, RETRO_W, RADAR_H);
     lv_obj_set_pos(s_retro_panel, LIST_W, HEADER_H);
     lv_obj_set_style_bg_color(s_retro_panel, RET_COL_BG, 0);
     lv_obj_add_flag(s_retro_panel, LV_OBJ_FLAG_HIDDEN);
 
-    int cx = RADAR_CX, cy = RADAR_CY, r = RADAR_R;
+    int cx = RETRO_CX, cy = RADAR_CY, r = RETRO_R;
 
     s_retro_map_img = lv_img_create(s_retro_panel);
     lv_obj_set_pos(s_retro_map_img, 0, 0);
@@ -4523,6 +4579,20 @@ void ui_init(void)
     build_radar_panel(scr);
     build_stats_panel(scr);
     build_retro_panel(scr);
+
+#ifdef CONFIG_CANFLIGHT_BOARD_WAVESHARE_7B
+    lv_obj_clear_flag(s_list_panel, LV_OBJ_FLAG_GESTURE_BUBBLE);
+    lv_obj_add_event_cb(s_list_panel, radar_drawer_cb, LV_EVENT_GESTURE, NULL);
+    s_radar_list_tab = lv_btn_create(scr);
+    lv_obj_set_size(s_radar_list_tab, UISX(36), UISY(60));
+    lv_obj_set_style_bg_color(s_radar_list_tab, COL_PANEL, 0);
+    lv_obj_clear_flag(s_radar_list_tab, LV_OBJ_FLAG_GESTURE_BUBBLE);
+    lv_obj_add_event_cb(s_radar_list_tab, radar_drawer_cb, LV_EVENT_GESTURE, NULL);
+    lv_obj_add_event_cb(s_radar_list_tab, radar_drawer_cb, LV_EVENT_CLICKED, NULL);
+    s_radar_list_tab_text = make_label(s_radar_list_tab,
+                                     UIFONT(&lv_font_montserrat_20, &lv_font_montserrat_12), COL_TEXT);
+    lv_obj_center(s_radar_list_tab_text);
+#endif
 
     /* All big tile framebuffers are session-persistent once used, so they
      * are allocated HERE, while PSRAM is one unfragmented block. Lazy
@@ -5167,6 +5237,9 @@ static bool radar_view_filter(double lat, double lon, float dist_km)
 
 static void render_list_rows(void)
 {
+#ifdef CONFIG_CANFLIGHT_BOARD_WAVESHARE_7B
+    if (s_view_mode == VIEW_RADAR && !s_radar_list_open) return;
+#endif
     bool ships_on = settings_get()->ships_enabled;
     if (s_list_mode_btnm != NULL) {
         if (ships_on) {

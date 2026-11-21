@@ -62,14 +62,14 @@ static const char *TAG = "photo";
 
 /* Source 1: planespotters.net public API (no key). Their terms ask for
  * the photographer's credit next to the picture. */
-static bool from_planespotters(const char *hex, char *url, size_t un,
+static bool from_planespotters(const char *kind, const char *id, char *url, size_t un,
                                char *credit, size_t cn, char *json, size_t jn)
 {
     char api[96];
-    snprintf(api, sizeof(api), "https://api.planespotters.net/pub/photos/hex/%s", hex);
-    esp_err_t err = http_get_to_buffer(api, json, jn, NULL);
+    snprintf(api, sizeof(api), "https://api.planespotters.net/pub/photos/%s/%s", kind, id);
+    esp_err_t err = http_get_to_buffer_t(api, json, jn, NULL, 3500);
     if (err != ESP_OK) {
-        ESP_LOGW(TAG, "planespotters %s: %s", hex, esp_err_to_name(err));
+        ESP_LOGW(TAG, "planespotters %s: %s", id, esp_err_to_name(err));
         return false;
     }
     bool ok = false;
@@ -77,9 +77,9 @@ static bool from_planespotters(const char *hex, char *url, size_t un,
     const cJSON *photos = root ? cJSON_GetObjectItem(root, "photos") : NULL;
     const cJSON *ph = cJSON_IsArray(photos) ? cJSON_GetArrayItem(photos, 0) : NULL;
     if (ph != NULL) {
-        const cJSON *tl = cJSON_GetObjectItem(ph, "thumbnail_large");
+        const cJSON *tl = cJSON_GetObjectItem(ph, "thumbnail");
         if (tl == NULL) {
-            tl = cJSON_GetObjectItem(ph, "thumbnail");
+            tl = cJSON_GetObjectItem(ph, "thumbnail_large");
         }
         const cJSON *src = tl ? cJSON_GetObjectItem(tl, "src") : NULL;
         const cJSON *who = cJSON_GetObjectItem(ph, "photographer");
@@ -91,7 +91,7 @@ static bool from_planespotters(const char *hex, char *url, size_t un,
         }
     }
     cJSON_Delete(root);
-    ESP_LOGI(TAG, "planespotters %s: %s", hex, ok ? "photo found" : "no photo");
+    ESP_LOGI(TAG, "planespotters %s: %s", id, ok ? "photo found" : "no photo");
     return ok;
 }
 
@@ -152,12 +152,16 @@ static uint16_t *fetch_representative_photo(const aircraft_t *aircraft, char *js
         return NULL;
     }
 
+    const char *search = type;
+    if (strcmp(type, "A21N") == 0) search = "Airbus%20A321neo";
+    if (strcmp(type, "B739") == 0) search = "Boeing%20737-900";
+    if (strcmp(type, "B39M") == 0) search = "Boeing%20737%20MAX%209";
     char api[512];
     snprintf(api, sizeof(api),
              "https://commons.wikimedia.org/w/api.php?action=query&format=json&formatversion=2"
              "&generator=search&gsrnamespace=6&gsrlimit=2&gsrsearch=filetype%%3Abitmap%%20%%22%s%%22%%20aircraft"
              "&prop=imageinfo&iiprop=url%%7Cthumbmime%%7Cextmetadata&iiurlwidth=500"
-             "&iiextmetadatafilter=Artist%%7CLicenseShortName", type);
+             "&iiextmetadatafilter=Artist%%7CLicenseShortName", search);
     if (http_get_to_buffer_t(api, json, 8192, NULL, 3500) != ESP_OK) return NULL;
 
     cJSON *root = cJSON_Parse(json);
@@ -206,7 +210,7 @@ static void show_route_details(const photo_req_t *req, char *buffer, size_t size
 {
     route_info_t route;
     char route_text[216] = "Departure and destination unavailable";
-    if (routes_lookup_details(&req->aircraft, &route)) {
+    if (routes_lookup_details(&req->aircraft, &route, buffer)) {
         snprintf(route_text, sizeof(route_text), "From: %s  %.44s\nTo: %s  %.44s\n%.42s",
                  route.origin.iata[0] ? route.origin.iata : route.origin.icao,
                  route.origin.city[0] ? route.origin.city : route.origin.name,
@@ -313,8 +317,14 @@ static void photo_task(void *arg)
     if (route_first) show_route_details(req, json, 8192);
     if (pixels == NULL && json != NULL && raw != NULL) {
         char url[256];
-        if (from_planespotters(req->hex, url, sizeof(url), credit, sizeof(credit),
+        if (from_planespotters("hex", req->hex, url, sizeof(url), credit, sizeof(credit),
                                json, 8192)) {
+            pixels = fetch_decode(url, raw, &w, &h, &downloaded_bytes);
+        }
+        const char *reg = req->aircraft.reg;
+        if (pixels == NULL && reg[0] &&
+            strspn(reg, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-") == strlen(reg) &&
+            from_planespotters("reg", reg, url, sizeof(url), credit, sizeof(credit), json, 8192)) {
             pixels = fetch_decode(url, raw, &w, &h, &downloaded_bytes);
         }
         if (pixels == NULL) {
@@ -327,7 +337,7 @@ static void photo_task(void *arg)
                 strlcpy(credit, "photo: airport-data.com", sizeof(credit));
             }
         }
-        if (pixels == NULL && req->show_details) {
+        if (pixels == NULL && req->aircraft.type_icao[0]) {
             if (lvgl_port_lock(-1)) {
                 if (s_overlay != NULL) lv_label_set_text(s_msg, "Looking for a representative photo…");
                 lvgl_port_unlock();
@@ -527,9 +537,10 @@ static void open_photo_panel(const char *hex, const char *callsign, const char *
     if (!photo_cached) lv_label_set_text(s_msg, L()->no_photo);
 }
 
-void ui_photo_open(const char *hex, const char *callsign)
+void ui_photo_open(const aircraft_t *aircraft)
 {
-    open_photo_panel(hex, callsign, NULL, NULL);
+    open_photo_panel(aircraft->hex, aircraft->callsign[0] ? aircraft->callsign : aircraft->hex,
+                     NULL, aircraft);
 }
 
 void ui_aircraft_more_open(const aircraft_t *aircraft, const char *live_details)

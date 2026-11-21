@@ -203,7 +203,7 @@ static bool hexdb_airport(char *buf, const char *icao, airport_t *ap)
 
     char url[80];
     snprintf(url, sizeof(url), "https://hexdb.io/api/v1/airport/icao/%s", icao);
-    if (http_get_keepalive_t(4, url, buf, 4096, NULL, 5000) != ESP_OK) {
+    if (http_get_to_buffer_t(url, buf, 4096, NULL, 3500) != ESP_OK) {
         return false;
     }
     cJSON *root = cJSON_Parse(buf);
@@ -240,66 +240,72 @@ static bool hexdb_airport(char *buf, const char *icao, airport_t *ap)
     return ok && ap->iata[0] != '\0';
 }
 
-/* adsb.lol routeset: crowd-sourced callsign->route with server-side
- * position plausibility. Better coverage of US carriers than adsbdb. */
-static void lol_routeset(char *buf, route_info_t *slot,
-                         double ac_lat, double ac_lon, bool has_pos)
+/* Resolve each adjacent leg of a multi-stop itinerary against live position. */
+static void vrs_select_leg(const cJSON *entry, route_info_t *slot, double lat, double lon,
+                           bool has_pos, float track, float speed, int vertical_rate)
+{
+    const cJSON *airports = cJSON_GetObjectItem(entry, "_airports");
+    if (!cJSON_IsArray(airports)) return;
+    int best = GEO_FIT_NO;
+    bool ambiguous = false;
+    const char *previous = NULL;
+    const cJSON *item;
+    cJSON_ArrayForEach(item, airports) {
+        const cJSON *icao = cJSON_GetObjectItem(item, "icao");
+        const char *code = cJSON_IsString(icao) && strlen(icao->valuestring) == 4 ?
+                           icao->valuestring : NULL;
+        airport_t origin, destination;
+        if (previous != NULL && code != NULL && strcmp(previous, code) != 0 &&
+            airports_lookup(previous, &origin) && airports_lookup(code, &destination)) {
+            int fit = has_pos ?
+                geo_route_fit_dir(origin.lat, origin.lon, destination.lat, destination.lon,
+                                  lat, lon, track, speed, vertical_rate) : GEO_FIT_WEAK;
+            if (fit > best) {
+                slot->origin = origin;
+                slot->destination = destination;
+                best = fit;
+                ambiguous = false;
+            } else if (fit != GEO_FIT_NO && fit == best) {
+                ambiguous = true;
+            }
+        }
+        previous = code;
+    }
+    slot->valid = best != GEO_FIT_NO && !ambiguous;
+}
+
+static void lol_routeset(char *buf, route_info_t *slot, double lat, double lon,
+                         bool has_pos, float track, float speed, int vertical_rate)
 {
     char body[160];
-    if (has_pos) {
-        snprintf(body, sizeof(body),
-                 "{\"planes\":[{\"callsign\":\"%s\",\"lat\":%.4f,\"lng\":%.4f}]}",
-                 slot->callsign, ac_lat, ac_lon);
-    } else {
-        snprintf(body, sizeof(body),
-                 "{\"planes\":[{\"callsign\":\"%s\",\"lat\":0,\"lng\":0}]}",
-                 slot->callsign);
-    }
+    snprintf(body, sizeof(body),
+             "{\"planes\":[{\"callsign\":\"%s\",\"lat\":%.4f,\"lng\":%.4f}]}",
+             slot->callsign, has_pos ? lat : 0.0, has_pos ? lon : 0.0);
     if (http_post_to_buffer_t("https://api.adsb.lol/api/0/routeset", body,
-                            buf, 8192, 5000) != ESP_OK) {
-        return;
-    }
+                              buf, 8192, 3500) != ESP_OK) return;
     cJSON *root = cJSON_Parse(buf);
-    if (root == NULL) {
-        return;
-    }
-    const cJSON *first = cJSON_IsArray(root) ? cJSON_GetArrayItem(root, 0) : NULL;
-    const cJSON *aps = first ? cJSON_GetObjectItem(first, "_airports") : NULL;
-    const cJSON *pl = first ? cJSON_GetObjectItem(first, "plausible") : NULL;
-    bool plausible = pl == NULL || cJSON_IsTrue(pl) ||
-                     (cJSON_IsNumber(pl) && pl->valuedouble != 0);
-    char orig[8] = "", dest[8] = "";
-    if (plausible && cJSON_IsArray(aps) && cJSON_GetArraySize(aps) >= 2) {
-        const cJSON *a0 = cJSON_GetArrayItem(aps, 0);
-        const cJSON *a1 = cJSON_GetArrayItem(aps, cJSON_GetArraySize(aps) - 1);
-        const cJSON *f;
-        if (a0 && (f = cJSON_GetObjectItem(a0, "icao")) && cJSON_IsString(f)) {
-            strlcpy(orig, f->valuestring, sizeof(orig));
-        }
-        if (a1 && (f = cJSON_GetObjectItem(a1, "icao")) && cJSON_IsString(f)) {
-            strlcpy(dest, f->valuestring, sizeof(dest));
-        }
-    }
+    vrs_select_leg(cJSON_GetArrayItem(root, 0), slot, lat, lon, has_pos, track, speed, vertical_rate);
     cJSON_Delete(root);
+}
 
-    if (strlen(orig) != 4 || strlen(dest) != 4 || strcmp(orig, dest) == 0) {
-        return;
-    }
-    if (hexdb_airport(buf, orig, &slot->origin) &&
-        hexdb_airport(buf, dest, &slot->destination)) {
-        slot->valid = true;
-        ESP_LOGI(TAG, "%s: route from adsb.lol routeset", slot->callsign);
-    } else {
-        memset(&slot->origin, 0, sizeof(slot->origin));
-        memset(&slot->destination, 0, sizeof(slot->destination));
-    }
+static void vrs_standing_route(char *buf, route_info_t *slot, const aircraft_t *aircraft)
+{
+    if (strlen(slot->callsign) < 3) return;
+    char url[128];
+    snprintf(url, sizeof(url), "https://vrs-standing-data.adsb.lol/routes/%.2s/%s.json",
+             slot->callsign, slot->callsign);
+    if (http_get_to_buffer_t(url, buf, 8192, NULL, 3500) != ESP_OK) return;
+    cJSON *root = cJSON_Parse(buf);
+    vrs_select_leg(root, slot, aircraft->lat, aircraft->lon, aircraft->has_pos,
+                   aircraft->track_deg, aircraft->gs_kts, aircraft->baro_rate_fpm);
+    cJSON_Delete(root);
 }
 
 static void hexdb_fallback(char *buf, route_info_t *slot)
 {
     char url[80];
     snprintf(url, sizeof(url), "https://hexdb.io/api/v1/route/icao/%s", slot->callsign);
-    if (http_get_keepalive_t(4, url, buf, 4096, NULL, 5000) != ESP_OK) {
+    if (http_get_to_buffer_t(url, buf, 4096, NULL, 3500) != ESP_OK) {
         return;
     }
     cJSON *root = cJSON_Parse(buf);
@@ -394,7 +400,7 @@ static esp_err_t adsbdb_route(char *buf, const char *callsign, route_info_t *out
     return ESP_OK;
 }
 
-bool routes_lookup_details(const aircraft_t *aircraft, route_info_t *out)
+bool routes_lookup_details(const aircraft_t *aircraft, route_info_t *out, char *buffer)
 {
     const char *callsign = aircraft->callsign;
     memset(out, 0, sizeof(*out));
@@ -402,17 +408,18 @@ bool routes_lookup_details(const aircraft_t *aircraft, route_info_t *out)
         strspn(callsign, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789") != strlen(callsign)) {
         return false;
     }
-    char *buffer = malloc(8192);
-    if (buffer == NULL) return false;
     strlcpy(out->callsign, callsign, sizeof(out->callsign));
 
     /* Share the stock providers and position checks without changing the
      * flight task's route cache from this worker. */
-    for (int provider = 0; provider < 3; provider++) {
+    for (int provider = 0; provider < 4; provider++) {
         if (provider == 0) {
-            lol_routeset(buffer, out, aircraft->lat, aircraft->lon, aircraft->has_pos);
+            lol_routeset(buffer, out, aircraft->lat, aircraft->lon, aircraft->has_pos,
+                         aircraft->track_deg, aircraft->gs_kts, aircraft->baro_rate_fpm);
         } else if (provider == 1) {
             adsbdb_route(buffer, callsign, out);
+        } else if (provider == 2) {
+            vrs_standing_route(buffer, out, aircraft);
         } else {
             hexdb_fallback(buffer, out);
         }
@@ -423,7 +430,6 @@ bool routes_lookup_details(const aircraft_t *aircraft, route_info_t *out)
         memset(out, 0, sizeof(*out));
         strlcpy(out->callsign, callsign, sizeof(out->callsign));
     }
-    free(buffer);
     return out->valid;
 }
 
@@ -450,7 +456,7 @@ const route_info_t *routes_fetch(const char *callsign,
     /* adsb.lol routeset first: we hand it the aircraft position and it
      * validates the route server-side, so it survives the stale shuttle
      * entries that plague the plain callsign tables. */
-    lol_routeset(buf, slot, ac_lat, ac_lon, has_pos);
+    lol_routeset(buf, slot, ac_lat, ac_lon, has_pos, track_deg, gs_kts, vrate_fpm);
     int fit = route_fit_position(slot, ac_lat, ac_lon, has_pos, track_deg, gs_kts, vrate_fpm);
     if (slot->valid && fit == GEO_FIT_NO) {
         ESP_LOGW(TAG, "%s: routeset %s->%s doesn't fit position",
