@@ -47,6 +47,12 @@
 #include "web_server.h"
 #include "wifi_mgr.h"
 #include "esp_app_desc.h"
+#ifndef APKFLIGHT
+#include <stdatomic.h>
+#include "esp_crt_bundle.h"
+#include "esp_https_ota.h"
+#include "esp_system.h"
+#endif
 
 static const char *TAG = "flight_task";
 
@@ -291,7 +297,111 @@ static void maybe_notify_cpa(const aircraft_list_t *list, double home_lat, doubl
     }
 }
 
-/* Once a day: compare the newest GitHub release against the running build */
+#ifndef APKFLIGHT
+static char s_update_version[32];
+static char s_update_image_url[224];
+static atomic_bool s_update_install_requested;
+
+void flight_request_firmware_install(void)
+{
+    atomic_store(&s_update_install_requested, true);
+}
+
+static int version_compare(const char *candidate, const char *running)
+{
+    unsigned a[3], b[3];
+    char tail_a[24], tail_b[24];
+    if (sscanf(candidate, "%u.%u.%u-%23s", &a[0], &a[1], &a[2], tail_a) != 4 ||
+        sscanf(running, "%u.%u.%u-%23s", &b[0], &b[1], &b[2], tail_b) != 4 ||
+        strcmp(tail_a, tail_b) != 0) {
+        return 0;
+    }
+    for (int i = 0; i < 3; i++) {
+        if (a[i] != b[i]) {
+            return a[i] > b[i] ? 1 : -1;
+        }
+    }
+    return 0;
+}
+
+static void check_updates(void)
+{
+    const char *server = settings_get()->update_server;
+    char version[32] = "";
+    s_update_image_url[0] = '\0';
+    if (strncmp(server, "https://", 8) == 0 && server[8] != '\0' &&
+        strpbrk(server + 8, "?#@ \t\r\n") == NULL) {
+        char manifest_url[224];
+        size_t len = strlen(server);
+        const char *separator = server[len - 1] == '/' ? "" : "/";
+        snprintf(manifest_url, sizeof(manifest_url), "%s%smanifest.json", server, separator);
+        char *buffer = malloc(1024);
+        if (buffer != NULL) {
+            if (http_get_to_buffer_t(manifest_url, buffer, 1024, NULL, 3000) == ESP_OK) {
+                cJSON *root = cJSON_Parse(buffer);
+                const cJSON *item = cJSON_GetObjectItem(root, "version");
+                if (cJSON_IsString(item) && strlen(item->valuestring) < sizeof(version) &&
+                    version_compare(item->valuestring, esp_app_get_description()->version) > 0) {
+                    strlcpy(version, item->valuestring, sizeof(version));
+                    snprintf(s_update_image_url, sizeof(s_update_image_url),
+                             "%s%sesp32flight.bin", server, separator);
+                }
+                cJSON_Delete(root);
+            }
+            free(buffer);
+        }
+    }
+    strlcpy(s_update_version, version, sizeof(s_update_version));
+    if (lvgl_port_lock(1000)) {
+        ui_set_update_available(version[0] != '\0', version);
+        lvgl_port_unlock();
+    }
+}
+
+static void install_configured_update(void)
+{
+    if (s_update_version[0] == '\0' || !atomic_exchange(&s_update_install_requested, false)) {
+        atomic_store(&s_update_install_requested, false);
+        return;
+    }
+
+    ui_toast("Installing firmware update");
+    esp_http_client_config_t http = {
+        .url = s_update_image_url,
+        .crt_bundle_attach = esp_crt_bundle_attach,
+        .disable_auto_redirect = true,
+        .timeout_ms = 15000,
+    };
+    esp_https_ota_config_t config = { .http_config = &http };
+    esp_https_ota_handle_t handle;
+    esp_err_t err = esp_https_ota_begin(&config, &handle);
+    if (err == ESP_OK) {
+        esp_app_desc_t app;
+        err = esp_https_ota_get_img_desc(handle, &app);
+        if (err == ESP_OK &&
+            (strncmp(app.version, s_update_version, sizeof(app.version)) != 0 ||
+             version_compare(app.version, esp_app_get_description()->version) <= 0)) {
+            err = ESP_ERR_INVALID_VERSION;
+        }
+        if (err == ESP_OK) {
+            do {
+                err = esp_https_ota_perform(handle);
+            } while (err == ESP_ERR_HTTPS_OTA_IN_PROGRESS);
+        }
+        if (err == ESP_OK && esp_https_ota_is_complete_data_received(handle)) {
+            err = esp_https_ota_finish(handle);
+            if (err == ESP_OK) {
+                esp_restart();
+            }
+        } else {
+            esp_https_ota_abort(handle);
+        }
+    }
+    ESP_LOGW(TAG, "private update failed: %s", esp_err_to_name(err));
+    ui_toast("Update failed. Current firmware retained.");
+}
+#else
+/* Android build checks the public release list. */
 static void check_updates(void)
 {
     char *buf = heap_caps_malloc(16 * 1024, MALLOC_CAP_SPIRAM);
@@ -325,6 +435,8 @@ static void check_updates(void)
     }
     free(buf);
 }
+
+#endif
 
 /* NULL if no emergency squawk on the list */
 static const aircraft_t *find_emergency(const aircraft_list_t *list)
@@ -703,6 +815,11 @@ static void flight_task(void *arg)
             last_weather_ms = -1;
         }
 #endif
+#ifndef APKFLIGHT
+        if (atomic_load(&s_update_install_requested)) {
+            install_configured_update();
+        }
+#endif
         /* Aircraft first: everything else (weather, layers, update check)
          * runs after the fetch + render, so it can never delay positions. */
         double query_lat = lat, query_lon = lon;
@@ -983,7 +1100,7 @@ static void flight_task(void *arg)
 
         /* Housekeeping after the aircraft are on screen (still gated by
          * primed so a dead link does not starve the first fetch retries). */
-        if (primed && (last_update_check_ms < 0 || tick_ms - last_update_check_ms > 24LL * 3600 * 1000)) {
+        if (primed && (last_update_check_ms < 0 || tick_ms - last_update_check_ms > 15LL * 60 * 1000)) {
             check_updates();
             last_update_check_ms = tick_ms;
         }
@@ -1043,6 +1160,11 @@ static void flight_task(void *arg)
 
         int64_t next_poll_ms = esp_timer_get_time() / 1000 + settings_get()->poll_seconds * 1000LL;
         while (area_revision == ui_radar_area_revision()) {
+#ifndef APKFLIGHT
+            if (atomic_load(&s_update_install_requested)) {
+                break;
+            }
+#endif
             int64_t remain_ms = next_poll_ms - esp_timer_get_time() / 1000;
             if (remain_ms <= 0) {
                 break;

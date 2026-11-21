@@ -14,6 +14,7 @@
 
 #include "airports.h"
 #include "flight_model.h"
+#include "flight_task.h"
 #include "fonts.h"
 #include "geocode.h"
 #include "lang.h"
@@ -65,6 +66,7 @@ static lv_obj_t *s_dd_aircraft_motion;
 static lv_obj_t *s_slider_night_bright;
 #ifndef APKFLIGHT
 static lv_obj_t *s_ta_flyitaly_key;
+static lv_obj_t *s_ta_update_server;
 #endif
 
 static bool s_scan_busy;
@@ -283,6 +285,16 @@ static void radius_cb(lv_event_t *e)
     lv_label_set_text(s_radius_label, buf);
 }
 
+static void install_private_update_cb(lv_event_t *e)
+{
+    (void)e;
+#ifndef APKFLIGHT
+    if (ui_update_available()) {
+        flight_request_firmware_install();
+    }
+#endif
+}
+
 static void ota_unlock_cb(lv_event_t *e)
 {
     settings_get()->ota_enabled =
@@ -411,6 +423,7 @@ static void save_cb(lv_event_t *e)
     strlcpy(cfg->ntfy_topic, lv_textarea_get_text(s_ta_ntfy), sizeof(cfg->ntfy_topic));
     strlcpy(cfg->mqtt_uri, lv_textarea_get_text(s_ta_mqtt), sizeof(cfg->mqtt_uri));
 #ifndef APKFLIGHT
+    strlcpy(cfg->update_server, lv_textarea_get_text(s_ta_update_server), sizeof(cfg->update_server));
     strlcpy(cfg->flyitaly_key, lv_textarea_get_text(s_ta_flyitaly_key), sizeof(cfg->flyitaly_key));
 #endif
     strlcpy(cfg->fa_key, lv_textarea_get_text(s_ta_fa), sizeof(cfg->fa_key));
@@ -876,7 +889,13 @@ void ui_settings_open(void)
     lv_obj_add_event_cb(sw_ota, ota_unlock_cb, LV_EVENT_VALUE_CHANGED, NULL);
     lv_obj_t *hint = add_label(p, L()->ota_hint, 0, 950);
     lv_obj_set_style_text_font(hint, UIFONT(&font_pl_14, &font_pl_8), 0);
-    int nety = 998;
+    add_label(p, "Private update server (HTTPS)", 0, 998);
+    s_ta_update_server = add_textarea(p, 0, 1022, 500, cfg->update_server, false);
+    lv_textarea_set_max_length(s_ta_update_server, sizeof(cfg->update_server) - 1);
+    if (ui_update_available()) {
+        add_button(p, 530, 1022, 140, 44, "Install", install_private_update_cb, COL_PANEL);
+    }
+    int nety = 1090;
 #endif
 
     char netbuf[120] = "";

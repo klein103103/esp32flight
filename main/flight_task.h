@@ -1,5 +1,9 @@
 #pragma once
 
+#ifndef APKFLIGHT
+void flight_request_firmware_install(void);
+#endif
+
 #include <stdint.h>
 
 /* Start the background task: Wi-Fi wait -> geolocate -> poll aircraft ->
