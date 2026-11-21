@@ -123,6 +123,10 @@ void settings_load(void)
         poll_seconds >= 5 && poll_seconds <= 600) {
         s_settings.poll_seconds = poll_seconds;
     }
+    uint8_t motion = 0;
+    if (nvs_get_u8(h, "air_motion", &motion) == ESP_OK && motion <= 2) {
+        s_settings.aircraft_motion = motion;
+    }
     uint8_t hide = 0;
     if (nvs_get_u8(h, "hide_gnd", &hide) == ESP_OK) {
         s_settings.hide_ground = hide != 0;
@@ -316,6 +320,7 @@ esp_err_t settings_save(void)
     nvs_set_str(h, "lon", coord);
     nvs_set_i32(h, "radius_nm", s_settings.radius_nm);
     nvs_set_i32(h, "poll_seconds", s_settings.poll_seconds);
+    nvs_set_u8(h, "air_motion", s_settings.aircraft_motion);
     nvs_set_u8(h, "hide_gnd", s_settings.hide_ground ? 1 : 0);
     nvs_set_u8(h, "hide_priv", s_settings.hide_private ? 1 : 0);
     nvs_set_u8(h, "show_cls", s_settings.show_classes);

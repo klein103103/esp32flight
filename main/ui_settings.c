@@ -61,6 +61,7 @@ static lv_obj_t *s_sw_ladsb;
 static lv_obj_t *s_sw_retro_map;
 static lv_obj_t *s_slider_radius, *s_radius_label;
 static lv_obj_t *s_ta_poll_seconds;
+static lv_obj_t *s_dd_aircraft_motion;
 static lv_obj_t *s_slider_night_bright;
 #ifndef APKFLIGHT
 static lv_obj_t *s_ta_flyitaly_key;
@@ -335,6 +336,7 @@ static void save_cb(lv_event_t *e)
     cfg->lat = atof(lv_textarea_get_text(s_ta_lat));
     cfg->lon = atof(lv_textarea_get_text(s_ta_lon));
     cfg->radius_nm = lv_slider_get_value(s_slider_radius);
+    cfg->aircraft_motion = (uint8_t)lv_dropdown_get_selected(s_dd_aircraft_motion);
     const char *poll_text = lv_textarea_get_text(s_ta_poll_seconds);
     if (poll_text[0] != '\0') {
         int seconds = atoi(poll_text);
@@ -696,6 +698,10 @@ void ui_settings_open(void)
     s_ta_poll_seconds = add_textarea(p, 0, 416, 180, buf, false);
     lv_textarea_set_accepted_chars(s_ta_poll_seconds, "0123456789");
     lv_textarea_set_max_length(s_ta_poll_seconds, 3);
+    add_label(p, "Aircraft motion", 220, 390);
+    s_dd_aircraft_motion = add_dropdown(p, 220, 416, 310, NULL);
+    lv_dropdown_set_options(s_dd_aircraft_motion, "Smooth movement\nEstimated movement\nSnap to updates");
+    lv_dropdown_set_selected(s_dd_aircraft_motion, cfg->aircraft_motion);
 
     /* --- Filters + alerts --- */
     p = tab_page(tv, L()->tab_filters);

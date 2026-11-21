@@ -12,6 +12,7 @@ typedef struct {
     double lon;
     int    radius_nm;
     int    poll_seconds;
+    uint8_t aircraft_motion; /* 0 smooth, 1 estimate, 2 snap */
     bool   hide_ground;
     bool   hide_private;    /* hide non-airline traffic (callsign not AAA123-style) */
     int    theme;           /* index into theme.c palettes */

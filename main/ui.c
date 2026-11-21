@@ -204,13 +204,17 @@ static bool s_retro_was_hidden;
 static char s_amb_sel_cs[9];   /* callsign picked by tapping its sprite */
 typedef struct {
     char  callsign[9];
+    char  hex[ICAO_HEX_LEN];
     float lat, lon, track;
+    float from_lat, from_lon, speed_kts;
     float dist_nm, dir_deg;
     int   alt_ft;
     bool  ground;
     uint8_t fcls;    /* flight_class_t for the marker sprite */
 } amb_target_t;
 static amb_target_t s_all[MAX_AIRCRAFT];
+static amb_target_t s_previous_targets[MAX_AIRCRAFT];
+static int s_previous_count;
 static int s_all_count;
 
 static uint16_t *s_amb_tiles;
@@ -556,6 +560,22 @@ static void logo_tick_cb(lv_timer_t *t)
     }
     render_list_rows();
     render_right();
+}
+
+static void aircraft_motion_timer_cb(lv_timer_t *timer)
+{
+    (void)timer;
+    if (s_view_mode != VIEW_RADAR || s_aircraft_cleared || s_aircraft_failure_ms >= 0 || s_all_count == 0) {
+        return;
+    }
+    int64_t age = esp_timer_get_time() / 1000 - s_aircraft_snapshot_ms;
+    static int64_t last_estimate_ms;
+    uint8_t motion = settings_get()->aircraft_motion;
+    if ((motion == 0 && age <= 1250) ||
+        (motion == 1 && age <= 15250 && age / 1000 != last_estimate_ms / 1000)) {
+        render_radar_panel();
+    }
+    last_estimate_ms = age;
 }
 
 static void aircraft_status_timer_cb(lv_timer_t *timer)
@@ -2517,6 +2537,31 @@ static void render_radar_extras(bool map_mode, int radius_nm)
     }
 }
 
+static void radar_display_position(const amb_target_t *target, double *lat, double *lon)
+{
+    *lat = target->lat;
+    *lon = target->lon;
+    if (s_aircraft_failure_ms >= 0 || s_aircraft_area_revision != ui_radar_area_revision()) {
+        return;
+    }
+    double age = (esp_timer_get_time() / 1000 - s_aircraft_snapshot_ms) / 1000.0;
+    uint8_t mode = settings_get()->aircraft_motion;
+    if (mode == 0 && age < 1.0) {
+        double fraction = fmax(0.0, age);
+        *lat = target->from_lat + (target->lat - target->from_lat) * fraction;
+        *lon = target->from_lon + (geo_lon_unwrap(target->from_lon, target->lon) - target->from_lon) * fraction;
+    } else if (mode == 1 && !target->ground && target->track >= 0 && target->speed_kts > 0) {
+        double bearing = target->track * M_PI / 180.0;
+        double angular_distance = fmin(15.0, fmax(0.0, age)) * target->speed_kts * 1.852 / (3600.0 * 6371.0);
+        double phi = target->lat * M_PI / 180.0;
+        double new_phi = asin(sin(phi) * cos(angular_distance) + cos(phi) * sin(angular_distance) * cos(bearing));
+        *lat = new_phi * 180.0 / M_PI;
+        *lon += atan2(sin(bearing) * sin(angular_distance) * cos(phi),
+                     cos(angular_distance) - sin(phi) * sin(new_phi)) * 180.0 / M_PI;
+    }
+    *lon = remainder(*lon, 360.0);
+}
+
 static void render_radar_panel(void)
 {
     radar_tiles_want();
@@ -2568,20 +2613,14 @@ static void render_radar_panel(void)
         }
         const amb_target_t *t = &s_all[i];
         int x, y;
-        if (map_mode) {
-            radar_project(t->lat, t->lon, &x, &y);
-            if (x < -14 || x > RADAR_W + 14 || y < -14 || y > RADAR_H + 14) {
-                lv_obj_add_flag(s_radar_dots[i], LV_OBJ_FLAG_HIDDEN);
-                continue;
-            }
-        } else {
-            float frac = t->dist_nm / (float)radius_nm;
-            if (frac > 1.0f) {
-                frac = 1.0f;
-            }
-            float rad = t->dir_deg * (float)M_PI / 180.0f;
-            x = RADAR_CX + (int)(sinf(rad) * frac * RADAR_R);
-            y = RADAR_CY - (int)(cosf(rad) * frac * RADAR_R);
+        double lat, lon;
+        radar_display_position(t, &lat, &lon);
+        double center_lat = s_radar_follow_map ? s_radar_center_lat : s_home_lat;
+        double center_lon = s_radar_follow_map ? s_radar_center_lon : s_home_lon;
+        float dist_km = (float)geo_haversine_km(center_lat, center_lon, lat, lon);
+        if (!radar_place(lat, lon, dist_km, map_mode, radius_nm, &x, &y)) {
+            lv_obj_add_flag(s_radar_dots[i], LV_OBJ_FLAG_HIDDEN);
+            continue;
         }
         bool sel = selac != NULL && selac->callsign[0] &&
                    strcmp(t->callsign, selac->callsign) == 0;
@@ -4136,6 +4175,7 @@ void ui_init(void)
     lv_timer_pause(s_cycle_timer);
     lv_timer_create(clock_timer_cb, 5000, NULL);
     lv_timer_create(aircraft_status_timer_cb, 1000, NULL);
+    lv_timer_create(aircraft_motion_timer_cb, 250, NULL);
     lv_timer_create(logo_tick_cb, 500, NULL);
     lv_timer_create(idle_timer_cb, 10000, NULL);
     apply_view(VIEW_RADAR);
@@ -4617,6 +4657,12 @@ static void render_detail(void)
 void ui_update(const aircraft_list_t *list)
 {
     /* Snapshot aircraft + routes so touch callbacks never race the fetcher. */
+    if (list == NULL) {
+        s_previous_count = 0;
+    } else if (list->fetched_at_ms != s_aircraft_snapshot_ms) {
+        s_previous_count = list->area_revision == s_aircraft_area_revision ? s_all_count : 0;
+        memcpy(s_previous_targets, s_all, (size_t)s_previous_count * sizeof(s_all[0]));
+    }
     if (list != NULL && list->source != NULL) {
         s_aircraft_source = list->source;
         s_aircraft_snapshot_ms = list->fetched_at_ms;
@@ -4636,6 +4682,17 @@ void ui_update(const aircraft_list_t *list)
         t->lat = (float)list->ac[i].lat;
         t->lon = (float)list->ac[i].lon;
         t->track = list->ac[i].track_deg;
+        t->speed_kts = list->ac[i].gs_kts;
+        strlcpy(t->hex, list->ac[i].hex, sizeof(t->hex));
+        t->from_lat = t->lat;
+        t->from_lon = t->lon;
+        for (int previous = 0; t->hex[0] && previous < s_previous_count; previous++) {
+            if (strcmp(t->hex, s_previous_targets[previous].hex) == 0) {
+                t->from_lat = s_previous_targets[previous].lat;
+                t->from_lon = s_previous_targets[previous].lon;
+                break;
+            }
+        }
         t->dist_nm = list->ac[i].dist_nm;
         t->dir_deg = list->ac[i].dir_deg;
         t->alt_ft = list->ac[i].alt_baro_ft;
