@@ -32,6 +32,8 @@ static lv_obj_t *s_msg;
 static lv_obj_t *s_credit;
 static lv_obj_t *s_aircraft_details;
 static uint8_t *s_photo_buf;
+static char s_photo_hex[8];
+static char s_photo_credit[96];
 static lv_img_dsc_t s_photo_dsc;
 static bool s_busy;
 
@@ -48,6 +50,7 @@ typedef struct {
     char hex[8];
     char callsign[12];
     bool show_details;
+    bool photo_cached;
 } photo_req_t;
 
 static const char *TAG = "photo";
@@ -161,6 +164,15 @@ static void read_aircraft_details(const photo_req_t *req, char *buffer, size_t s
     }
 }
 
+static void display_cached_photo(void)
+{
+    lv_img_set_src(s_img, &s_photo_dsc);
+    lv_img_set_zoom(s_img, s_photo_dsc.header.w <= 390 && s_photo_dsc.header.h <= 200 ? 512 : 256);
+    lv_obj_clear_flag(s_img, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(s_msg, LV_OBJ_FLAG_HIDDEN);
+    lv_label_set_text(s_credit, s_photo_credit);
+}
+
 static void photo_task(void *arg)
 {
     photo_req_t *req = arg;
@@ -169,7 +181,7 @@ static void photo_task(void *arg)
     int w = 0, h = 0;
 
     char *json = malloc(8192);
-    uint8_t *raw = heap_caps_malloc(PHOTO_MAX_BYTES, MALLOC_CAP_SPIRAM);
+    uint8_t *raw = req->photo_cached ? NULL : heap_caps_malloc(PHOTO_MAX_BYTES, MALLOC_CAP_SPIRAM);
     if (json != NULL && raw != NULL) {
         char url[256];
         if (from_planespotters(req->hex, url, sizeof(url), credit, sizeof(credit),
@@ -188,11 +200,11 @@ static void photo_task(void *arg)
         }
     }
     free(raw);
-    if (pixels == NULL) {
+    if (pixels == NULL && !req->photo_cached) {
         ESP_LOGI(TAG, "%s: no photo from any source", req->hex);
     }
 
-    if (lvgl_port_lock(-1)) {
+    if (!req->photo_cached && lvgl_port_lock(-1)) {
         if (s_overlay != NULL) {
             if (pixels != NULL) {
                 free(s_photo_buf);
@@ -205,13 +217,9 @@ static void photo_task(void *arg)
                 s_photo_dsc.header.h = h;
                 s_photo_dsc.data = s_photo_buf;
                 s_photo_dsc.data_size = (uint32_t)w * h * 2;
-                lv_img_set_src(s_img, &s_photo_dsc);
-                if (w <= 390 && h <= 200) {
-                    lv_img_set_zoom(s_img, 512);   /* tiny thumbnail: 2x */
-                }
-                lv_obj_clear_flag(s_img, LV_OBJ_FLAG_HIDDEN);
-                lv_obj_add_flag(s_msg, LV_OBJ_FLAG_HIDDEN);
-                lv_label_set_text(s_credit, credit);
+                strlcpy(s_photo_hex, req->hex, sizeof(s_photo_hex));
+                strlcpy(s_photo_credit, credit, sizeof(s_photo_credit));
+                display_cached_photo();
             } else {
                 lv_label_set_text(s_msg, L()->no_photo);
             }
@@ -297,11 +305,17 @@ static void open_photo_panel(const char *hex, const char *callsign, const char *
     lv_label_set_text(s_credit, "");
     lv_obj_align(s_credit, LV_ALIGN_BOTTOM_LEFT, UISX(16), -UISY(8));
 
+    bool photo_cached = s_photo_buf != NULL && strcmp(s_photo_hex, hex) == 0;
+    if (photo_cached) {
+        display_cached_photo();
+        if (!show_details) return;
+    }
     photo_req_t *req = malloc(sizeof(photo_req_t));
     if (req != NULL) {
         strlcpy(req->hex, hex, sizeof(req->hex));
         strlcpy(req->callsign, callsign, sizeof(req->callsign));
         req->show_details = show_details;
+        req->photo_cached = photo_cached;
         s_busy = true;
         if (xTaskCreate(photo_task, "photo", 8192, req, 3, NULL) == pdPASS) {
             return;
@@ -312,7 +326,7 @@ static void open_photo_panel(const char *hex, const char *callsign, const char *
     if (s_aircraft_details != NULL) {
         lv_label_set_text(s_aircraft_details, "Aircraft and route details unavailable");
     }
-    lv_label_set_text(s_msg, L()->no_photo);
+    if (!photo_cached) lv_label_set_text(s_msg, L()->no_photo);
 }
 
 void ui_photo_open(const char *hex, const char *callsign)
