@@ -1754,34 +1754,33 @@ static void radar_zoom_cb(lv_event_t *e)
     radar_tiles_want();
 }
 
-static void radar_dot_cb(lv_event_t *e)
+static void radar_dot_cb(lv_event_t *event)
 {
-    int i = (int)(intptr_t)lv_event_get_user_data(e);
-    if (i < 0 || i >= s_all_count || s_all[i].callsign[0] == '\0') {
+    int i = (int)(intptr_t)lv_event_get_user_data(event);
+    if (i < 0 || i >= s_all_count || !s_all[i].hex[0]) {
         return;
     }
-    for (int j = 0; j < s_shown_count; j++) {
-        if (strcmp(s_shown[j].ac.callsign, s_all[i].callsign) == 0) {
-            if (j == s_selected && s_sel_ship_mmsi == 0) {
-                /* second tap on the selected plane toggles the bubble away */
-                s_radar_bub_off = !s_radar_bub_off;
-                render_radar_panel();
-                return;
+    if (strcmp(s_selected_hex, s_all[i].hex) == 0 && s_sel_ship_mmsi == 0) {
+        s_radar_bub_off = !s_radar_bub_off;
+    } else {
+        s_radar_bub_off = false;
+        s_sel_ship_mmsi = 0;
+        strlcpy(s_selected_hex, s_all[i].hex, sizeof(s_selected_hex));
+        s_selected = -1;
+        for (int j = 0; j < s_shown_count; j++) {
+            if (strcmp(s_shown[j].ac.hex, s_selected_hex) == 0) {
+                s_selected = j;
+                break;
             }
-            s_radar_bub_off = false;
-            s_sel_ship_mmsi = 0;
-            s_selected = j;
-            strlcpy(s_selected_hex, s_shown[j].ac.hex, sizeof(s_selected_hex));
-            render_list_selection();
-            int row = row_of_shown(j);
-            if (row >= 0) {
-                lv_obj_scroll_to_view(s_list_rows[row], LV_ANIM_ON);
-            }
-            render_radar_panel();
-            lv_timer_reset(s_cycle_timer);
-            return;
+        }
+        render_list_selection();
+        int row = s_selected >= 0 ? row_of_shown(s_selected) : -1;
+        if (row >= 0) {
+            lv_obj_scroll_to_view(s_list_rows[row], LV_ANIM_ON);
         }
     }
+    render_radar_panel();
+    lv_timer_reset(s_cycle_timer);
 }
 
 static void radar_area_changed(void)
@@ -1946,9 +1945,11 @@ static void radar_rings_cb(lv_event_t *event)
 static void radar_more_cb(lv_event_t *event)
 {
     (void)event;
-    if (s_selected >= 0 && s_selected < s_shown_count) {
-        const aircraft_t *aircraft = &s_shown[s_selected].ac;
-        ui_aircraft_more_open(aircraft->hex, aircraft->callsign);
+    for (int i = 0; i < s_all_count; i++) {
+        if (strcmp(s_selected_hex, s_all[i].hex) == 0) {
+            ui_aircraft_more_open(s_all[i].hex, s_all[i].callsign);
+            break;
+        }
     }
 }
 
@@ -2703,9 +2704,8 @@ static void render_radar_panel(void)
     }
 
     radar_offline_airports(!map_mode, radius_nm);
-    const aircraft_t *selac = (s_selected >= 0 && s_selected < s_shown_count)
-                                  ? &s_shown[s_selected].ac : NULL;
     bool planes_on = view_shows_planes();
+    bool bubble_visible = false;
     typedef struct { int x, y, group; bool visible; } radar_point_t;
     radar_point_t points[MAX_AIRCRAFT] = {0};
     s_radar_group_count = 0;
@@ -2721,7 +2721,7 @@ static void render_radar_panel(void)
             point->group = -1;
             point->visible = (!target->ground || ui_radar_show_ground()) &&
                 radar_place(lat, lon, distance_km, map_mode, radius_nm, &point->x, &point->y);
-            bool selected = selac != NULL && strcmp(target->hex, selac->hex) == 0;
+            bool selected = s_selected_hex[0] && strcmp(target->hex, s_selected_hex) == 0;
             if (!point->visible || !map_mode || selected || radius_nm * s_radar_zoom < 50.0 || distance_km < 46.3f) {
                 continue;
             }
@@ -2777,7 +2777,7 @@ static void render_radar_panel(void)
         }
         const amb_target_t *t = &s_all[i];
         int x = points[i].x, y = points[i].y;
-        bool sel = selac != NULL && strcmp(t->hex, selac->hex) == 0;
+        bool sel = s_selected_hex[0] && strcmp(t->hex, s_selected_hex) == 0;
         lv_obj_set_pos(s_radar_dots[i], x - 14, y - 14);   /* UIZOOM keeps the 28px box */
         img_src_if_changed(s_radar_dots[i], class_sprite(t->fcls));
         lv_img_set_angle(s_radar_dots[i], (int)(t->track * 10));
@@ -2803,21 +2803,21 @@ static void render_radar_panel(void)
         }
 
         if (sel) {
-            char info[96];
-            if (selac->on_ground) {
-                snprintf(info, sizeof(info), "%s\n%s  %.1f km",
-                         selac->callsign[0] ? selac->callsign : selac->hex,
-                         L()->ground, selac->dist_nm * 1.852);
+            char info[112];
+            char altitude[20], speed[20], track[16];
+            if (t->track >= 0) {
+                snprintf(track, sizeof(track), "%.0f°", (double)t->track);
             } else {
-                char ua[20], us[20];
-                snprintf(info, sizeof(info), "%s\n%s  %s  %.1f km",
-                         selac->callsign[0] ? selac->callsign : selac->hex,
-                         units_alt(selac->alt_baro_ft, ua, sizeof(ua)),
-                         units_speed(selac->gs_kts, us, sizeof(us)),
-                         selac->dist_nm * 1.852);
+                strlcpy(track, "—", sizeof(track));
             }
-            lv_label_set_text(s_radar_info, info);
-            const char *lcode = airline_code(selac, &s_shown[s_selected].route);
+            snprintf(info, sizeof(info), "%s\n%s  %s\nTrack %s  %.1f NM",
+                     t->callsign[0] ? t->callsign : t->hex,
+                     t->ground ? L()->ground : units_alt(t->alt_ft, altitude, sizeof(altitude)),
+                     units_speed(t->speed_kts, speed, sizeof(speed)),
+                     track, (double)t->dist_nm);
+            label_set_if_changed(s_radar_info, info);
+            const char *lcode = s_selected >= 0 && s_selected < s_shown_count
+                ? airline_code(&s_shown[s_selected].ac, &s_shown[s_selected].route) : NULL;
             const lv_img_dsc_t *ldsc = lcode ? logos_get(lcode) : NULL;
             if (ldsc != NULL) {
                 img_src_if_changed(s_radar_blogo, ldsc);
@@ -2829,6 +2829,7 @@ static void render_radar_panel(void)
                 lv_obj_add_flag(s_radar_bub, LV_OBJ_FLAG_HIDDEN);
             } else {
                 lv_obj_clear_flag(s_radar_bub, LV_OBJ_FLAG_HIDDEN);
+                bubble_visible = true;
             }
             int lx = x + UISX(12), ly = y - UISY(10);
             if (lx > RADAR_W - UISX(190)) {
@@ -2843,8 +2844,7 @@ static void render_radar_panel(void)
             lv_obj_set_pos(s_radar_bub, lx, ly);
         }
     }
-    if (!planes_on || s_selected < 0 || s_selected >= s_shown_count ||
-        selac == NULL) {
+    if (!bubble_visible) {
         lv_obj_add_flag(s_radar_bub, LV_OBJ_FLAG_HIDDEN);
     }
     render_radar_extras(map_mode, radius_nm);
@@ -4915,7 +4915,13 @@ void ui_update(const aircraft_list_t *list)
             break;
         }
     }
-    if (s_selected < 0 && s_shown_count > 0) {
+    bool radar_pin_available = false;
+    if (s_view_mode == VIEW_RADAR && s_selected_hex[0]) {
+        for (int i = 0; i < s_all_count; i++) {
+            radar_pin_available |= strcmp(s_selected_hex, s_all[i].hex) == 0;
+        }
+    }
+    if (s_selected < 0 && !radar_pin_available && s_shown_count > 0) {
         s_selected = 0;
         strlcpy(s_selected_hex, s_shown[0].ac.hex, sizeof(s_selected_hex));
     }
