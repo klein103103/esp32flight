@@ -17,6 +17,7 @@
 #include "logos.h"
 #include "flags.h"
 #include "esp_timer.h"
+#include "esp_system.h"
 #include <stdatomic.h>
 #include "runways.h"
 #include "airports.h"
@@ -1764,10 +1765,19 @@ static void radar_save_home_cb(lv_event_t *event)
     lv_obj_t *box = lv_event_get_current_target(event);
     if (lv_msgbox_get_active_btn(box) == 0) {
         settings_t *cfg = settings_get();
+        bool previous_fixed = cfg->use_fixed_loc;
+        double previous_lat = cfg->lat, previous_lon = cfg->lon;
         cfg->use_fixed_loc = true;
         cfg->lat = s_radar_center_lat;
         cfg->lon = s_radar_center_lon;
-        settings_save();
+        if (settings_save() != ESP_OK) {
+            cfg->use_fixed_loc = previous_fixed;
+            cfg->lat = previous_lat;
+            cfg->lon = previous_lon;
+            lv_msgbox_close(box);
+            ui_toast("Could not save Home");
+            return;
+        }
 #ifdef APKFLIGHT
         extern void apk_settings_touch(void);
         apk_settings_touch();
