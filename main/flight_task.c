@@ -1087,7 +1087,7 @@ static void flight_task(void *arg)
                          fa_used, fa_used * FA_COST_PER_CALL);
             }
             mqtt_pub_state(mq);
-        } else {
+        } else if (err != FLIGHT_FETCH_DEFERRED) {
             consecutive_failures++;
             if (lvgl_port_lock(1000)) {
                 ui_aircraft_refresh_failed();

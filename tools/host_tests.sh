@@ -108,6 +108,7 @@ typedef int esp_err_t;
 typedef struct { const char *source; unsigned count; } aircraft_list_t;
 #define ESP_OK 0
 #define ESP_ERR_TIMEOUT 1
+#define FLIGHT_FETCH_DEFERRED 0x7f01
 #define ESP_ERR_HTTP_BASE 1000
 #define FETCH_BUF_SIZE 64
 #define ESP_LOGW(...) ((void)0)
@@ -212,7 +213,7 @@ int main(int argc, char **argv)
         assert(fetch_internet(0, 0, 25, &out, buf) == ESP_OK);
         assert(calls[1] == 1 && strcmp(out.source, "adsb.lol") == 0);
         clock_ms = 30000;
-        assert(fetch_internet(0, 0, 25, &out, buf) != ESP_OK);
+        assert(fetch_internet(0, 0, 25, &out, buf) == FLIGHT_FETCH_DEFERRED);
         assert(calls[1] == 1);
         replies[0] = ESP_OK;
         clock_ms = 40000;

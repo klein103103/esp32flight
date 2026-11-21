@@ -1,12 +1,13 @@
 #pragma once
 
 #include <stdbool.h>
+#include <time.h>
 #include "esp_err.h"
 
 #define WEATHER_FORECAST_HOURS 24
 
 typedef struct {
-    char local_time[17];
+    time_t timestamp;
     float temp_c;
     float wind_kmh;
     int precipitation_pct;

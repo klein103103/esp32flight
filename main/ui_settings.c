@@ -64,6 +64,7 @@ static lv_obj_t *s_sw_retro_map;
 static lv_obj_t *s_slider_radius, *s_radius_label;
 static lv_obj_t *s_ta_poll_seconds;
 static lv_obj_t *s_dd_aircraft_motion;
+static lv_obj_t *s_sw_tz_manual, *s_ta_tz_offset;
 static lv_obj_t *s_slider_night_bright;
 #ifndef APKFLIGHT
 static lv_obj_t *s_ta_flyitaly_key;
@@ -103,7 +104,7 @@ static void kb_event_cb(lv_event_t *e)
 static void ta_focus_cb(lv_event_t *e)
 {
     lv_obj_t *ta = lv_event_get_target(e);
-    bool numeric = (ta == s_ta_poll_seconds || ta == s_ta_lat || ta == s_ta_lon || ta == s_ta_amb_idle ||
+    bool numeric = (ta == s_ta_tz_offset || ta == s_ta_poll_seconds || ta == s_ta_lat || ta == s_ta_lon || ta == s_ta_amb_idle ||
                     ta == s_ta_night_from || ta == s_ta_night_to ||
                     ta == s_ta_amb_from || ta == s_ta_amb_to);
     lv_keyboard_set_mode(s_kb, numeric ? LV_KEYBOARD_MODE_NUMBER : LV_KEYBOARD_MODE_TEXT_LOWER);
@@ -367,6 +368,13 @@ static void save_cb(lv_event_t *e)
     cfg->lon = atof(lv_textarea_get_text(s_ta_lon));
     cfg->radius_nm = lv_slider_get_value(s_slider_radius);
     cfg->aircraft_motion = (uint8_t)lv_dropdown_get_selected(s_dd_aircraft_motion);
+    cfg->time_zone_manual = lv_obj_has_state(s_sw_tz_manual, LV_STATE_CHECKED);
+    const char *offset_text = lv_textarea_get_text(s_ta_tz_offset);
+    char *offset_end;
+    long offset = strtol(offset_text, &offset_end, 10);
+    if (offset_end != offset_text && *offset_end == '\0' && offset >= -720 && offset <= 840) {
+        cfg->time_zone_offset_minutes = (int)offset;
+    }
     const char *poll_text = lv_textarea_get_text(s_ta_poll_seconds);
     if (poll_text[0] != '\0') {
         int seconds = atoi(poll_text);
@@ -917,6 +925,13 @@ void ui_settings_open(void)
     int nety = 1090;
 #endif
 
+    s_sw_tz_manual = add_switch(p, "Manual time zone", 0, nety, cfg->time_zone_manual);
+    add_label(p, "UTC offset in minutes (−720 to +840)", 380, nety);
+    snprintf(buf, sizeof(buf), "%d", cfg->time_zone_offset_minutes);
+    s_ta_tz_offset = add_textarea(p, 380, nety + 26, 190, buf, false);
+    lv_textarea_set_accepted_chars(s_ta_tz_offset, "-+0123456789");
+    lv_textarea_set_max_length(s_ta_tz_offset, 4);
+    nety += 94;
     char netbuf[120] = "";
     esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
     esp_netif_ip_info_t ip_info;

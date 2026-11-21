@@ -7,6 +7,7 @@
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "http_util.h"
+#include "settings.h"
 
 static const char *TAG = "tz";
 
@@ -39,12 +40,13 @@ void tz_set_home_offset(int offset_s)
 
 bool tz_home_known(void)
 {
-    return s_home_known;
+    return settings_get()->time_zone_manual || s_home_known;
 }
 
 int tz_home_offset(void)
 {
-    return s_home_offset;
+    const settings_t *cfg = settings_get();
+    return cfg->time_zone_manual ? cfg->time_zone_offset_minutes * 60 : s_home_offset;
 }
 
 bool tz_offset_for(const char *key, double lat, double lon, int *offset_s)

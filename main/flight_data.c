@@ -375,7 +375,7 @@ static esp_err_t fetch_internet(double lat, double lon, int radius_nm,
         return err;
     }
     if (now_ms < fallback_retry_at_ms) {
-        return fallback_healthy ? err : fetch_flyitaly(lat, lon, radius_nm, out, buf, err);
+        return fallback_healthy ? FLIGHT_FETCH_DEFERRED : fetch_flyitaly(lat, lon, radius_nm, out, buf, err);
     }
 
     now_ms = esp_timer_get_time() / 1000;

@@ -1017,9 +1017,14 @@ static void weather_open_cb(lv_event_t *event)
         } else {
             snprintf(precip_text, sizeof(precip_text), "%d%%", hour->precipitation_pct);
         }
+        struct tm local;
+        time_t display_time = hour->timestamp + tz_home_offset();
+        gmtime_r(&display_time, &local);
+        char hour_label[20];
+        strftime(hour_label, sizeof(hour_label), "%m-%d %H:%M", &local);
         lv_obj_t *row = make_label(scroll, UIFONT(&font_pl_14, &font_pl_8), COL_TEXT);
-        lv_label_set_text_fmt(row, "%.*s  %s    %.0f %s    Wind %.0f %s    Precip %s",
-                              5, hour->local_time + 5, hour->local_time + 11,
+        lv_label_set_text_fmt(row, "%s    %.0f %s    Wind %.0f %s    Precip %s",
+                              hour_label,
                               (double)temperature, fahr ? "°F" : "°C",
                               (double)wind, fahr ? "mph" : "km/h", precip_text);
     }

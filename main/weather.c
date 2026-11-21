@@ -19,7 +19,7 @@ esp_err_t weather_fetch(double lat, double lon, weather_t *out)
              "https://api.open-meteo.com/v1/forecast?latitude=%.4f&longitude=%.4f"
              "&current=temperature_2m,weather_code,wind_speed_10m,wind_direction_10m&wind_speed_unit=kmh"
              "&hourly=temperature_2m,wind_speed_10m,precipitation_probability"
-             "&forecast_hours=24&timezone=auto",
+             "&forecast_hours=24&timezone=auto&timeformat=unixtime",
              lat, lon);
 
     char *buf = malloc(4096);
@@ -64,11 +64,11 @@ esp_err_t weather_fetch(double lat, double lon, weather_t *out)
         const cJSON *temp = cJSON_GetArrayItem(temps, i);
         const cJSON *wind = cJSON_GetArrayItem(winds, i);
         const cJSON *rain = cJSON_GetArrayItem(precip, i);
-        if (!cJSON_IsString(time) || !cJSON_IsNumber(temp) || !cJSON_IsNumber(wind)) {
+        if (!cJSON_IsNumber(time) || !cJSON_IsNumber(temp) || !cJSON_IsNumber(wind)) {
             continue;
         }
         weather_hour_t *hour = &out->hours[out->hour_count++];
-        snprintf(hour->local_time, sizeof(hour->local_time), "%s", time->valuestring);
+        hour->timestamp = (time_t)time->valuedouble;
         hour->temp_c = (float)temp->valuedouble;
         hour->wind_kmh = (float)wind->valuedouble;
         hour->precipitation_pct = cJSON_IsNumber(rain) ? rain->valueint : -1;

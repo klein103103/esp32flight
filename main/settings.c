@@ -118,6 +118,14 @@ void settings_load(void)
     if (nvs_get_i32(h, "radius_nm", &radius) == ESP_OK && radius >= 1 && radius <= 250) {
         s_settings.radius_nm = radius;
     }
+    int32_t offset_minutes;
+    uint8_t manual = 0;
+    if (nvs_get_u8(h, "tz_manual", &manual) == ESP_OK && manual &&
+        nvs_get_i32(h, "tz_offset", &offset_minutes) == ESP_OK &&
+        offset_minutes >= -720 && offset_minutes <= 840) {
+        s_settings.time_zone_manual = true;
+        s_settings.time_zone_offset_minutes = offset_minutes;
+    }
     int32_t poll_seconds;
     if (nvs_get_i32(h, "poll_seconds", &poll_seconds) == ESP_OK &&
         poll_seconds >= 5 && poll_seconds <= 600) {
@@ -321,6 +329,8 @@ esp_err_t settings_save(void)
     nvs_set_str(h, "lon", coord);
     nvs_set_i32(h, "radius_nm", s_settings.radius_nm);
     nvs_set_i32(h, "poll_seconds", s_settings.poll_seconds);
+    nvs_set_u8(h, "tz_manual", s_settings.time_zone_manual);
+    nvs_set_i32(h, "tz_offset", s_settings.time_zone_offset_minutes);
     nvs_set_u8(h, "air_motion", s_settings.aircraft_motion);
     nvs_set_u8(h, "hide_gnd", s_settings.hide_ground ? 1 : 0);
     nvs_set_u8(h, "hide_priv", s_settings.hide_private ? 1 : 0);

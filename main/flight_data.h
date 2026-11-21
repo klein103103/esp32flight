@@ -5,6 +5,9 @@
 
 /* Fetch aircraft within radius_nm of lat/lon. Tries airplanes.live first,
  * falls back to adsb.lol (same JSON schema). Result sorted by distance. */
+/* The healthy fallback is between scheduled polls. */
+#define FLIGHT_FETCH_DEFERRED 0x7f01
+
 esp_err_t flight_fetch_nearby(double lat, double lon, int radius_nm, aircraft_list_t *out);
 
 /* Track mode: find one flight anywhere in the world by callsign,
