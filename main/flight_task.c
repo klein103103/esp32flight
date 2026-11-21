@@ -51,6 +51,7 @@
 #include <stdatomic.h>
 #include "esp_crt_bundle.h"
 #include "esp_https_ota.h"
+#include "sd_cache.h"
 #include "esp_system.h"
 #endif
 
@@ -468,6 +469,9 @@ static void publish_web_state(const aircraft_list_t *list, const weather_t *wx,
     cJSON_AddNumberToObject(root, "lat", lat);
     cJSON_AddNumberToObject(root, "lon", lon);
     cJSON_AddNumberToObject(root, "radius_km", (int)(radius_nm * 1.852));
+#ifndef APKFLIGHT
+    cJSON_AddBoolToObject(root, "sd_cache_ready", sd_cache_ready());
+#endif
     if (list->source != NULL) {
         cJSON_AddStringToObject(root, "aircraft_source", list->source);
         cJSON_AddNumberToObject(root, "aircraft_snapshot_age_ms",

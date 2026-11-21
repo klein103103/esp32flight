@@ -1,4 +1,7 @@
 #include "tilemap.h"
+#ifndef APKFLIGHT
+#include "sd_cache.h"
+#endif
 #include "settings.h"
 
 #include <math.h>
@@ -306,6 +309,20 @@ static uint32_t tile_source_sig(void)
     return h ^ (settings_get()->map_light ? 1u : 0u);
 }
 
+#ifndef APKFLIGHT
+static void sd_tile_path(uint32_t key, char *directory, size_t directory_size, char *path, size_t path_size)
+{
+    static uint32_t signature;
+    static bool initialized;
+    if (!initialized) {
+        signature = tile_source_sig();
+        initialized = true;
+    }
+    snprintf(directory, directory_size, "/sd/radar/tiles/%08lx", (unsigned long)signature);
+    snprintf(path, path_size, "%s/%08lx.png", directory, (unsigned long)key);
+}
+#endif
+
 static void ftile_check_source(void)
 {
     static bool checked;
@@ -481,13 +498,27 @@ static bool blit_tile(esp_http_client_handle_t client, tile_sink_t *sink,
     size_t len = 0;
     bool from_cache = false;
     uint8_t *flash_buf = NULL;
+#ifndef APKFLIGHT
+    char sd_directory[32], sd_path[56];
+    const bool use_sd = sd_cache_ready();
+    if (use_sd) sd_tile_path(key, sd_directory, sizeof(sd_directory), sd_path, sizeof(sd_path));
+#endif
 
     if (attempt == 0) {
         fetch_buf = tcache_get(key, &clen);
         len = clen;
         from_cache = fetch_buf != NULL;
+#ifndef APKFLIGHT
+        if (!from_cache && use_sd) {
+            len = sd_cache_read(sd_path, sink->buf, TILE_BUF);
+            if (len >= 8) {
+                fetch_buf = sink->buf;
+                from_cache = true;
+            }
+        }
+#endif
         if (!from_cache) {
-            /* persisted on the assets partition? renders offline forever */
+            /* persisted on the assets partition? */
             flash_buf = ftile_get(key, &len);
             if (flash_buf != NULL) {
                 tcache_put(key, flash_buf, len);
@@ -514,7 +545,6 @@ static bool blit_tile(esp_http_client_handle_t client, tile_sink_t *sink,
             return false;
         }
         tcache_put(key, sink->buf, sink->len);
-        ftile_put(key, sink->buf, sink->len);
         fetch_buf = sink->buf;
         len = sink->len;
     }
@@ -605,9 +635,21 @@ static bool blit_tile(esp_http_client_handle_t client, tile_sink_t *sink,
         ESP_LOGW(TAG, "tile %d/%d/%d: cached copy undecodable, refetching", z, tx, ty);
         tcache_drop_key(key);
         ftile_unlink(key);
+#ifndef APKFLIGHT
+        if (use_sd) unlink(sd_path);
+#endif
         continue;
     }
 
+    if (!from_cache) {
+#ifndef APKFLIGHT
+        if (!use_sd || !sd_cache_write_tile(sd_directory, sd_path, fetch_buf, len))
+#endif
+        ftile_put(key, fetch_buf, len);
+    }
+#ifndef APKFLIGHT
+    if (from_cache && fetch_buf == sink->buf) tcache_put(key, fetch_buf, len);
+#endif
     const bool light = settings_get()->map_light;
     /* hoisted: calling tile_source_is_osm() per pixel multiplied the
      * per-tile cost on every render (0.4.6 regression) */

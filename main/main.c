@@ -14,6 +14,7 @@
 #include "settings.h"
 #include "input_ctl.h"
 #include "tilemap.h"
+#include "sd_cache.h"
 #include "ui.h"
 #include "ui_settings.h"
 #include "ui_map.h"
@@ -64,6 +65,7 @@ void app_main(void)
 
     logos_init();
     airports_init();
+    sd_cache_init();
     tilemap_init();
     /* pre-decode both world maps so map opens never decode PNGs at draw time */
     ui_map_get_image();

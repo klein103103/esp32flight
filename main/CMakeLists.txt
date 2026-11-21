@@ -55,6 +55,7 @@ idf_component_register(
         "input_ctl.c"
         "theme.c"
         "tilemap.c"
+        "sd_cache.c"
         "trails.c"
         "tz.c"
         "weather.c"
@@ -70,7 +71,7 @@ idf_component_register(
         "font_pl_16.c"
         "font_pl_20.c"
     INCLUDE_DIRS "." ${BOARD_PORT_INC} "tab5"
-    REQUIRES esp_wifi esp_http_client esp_http_server esp-tls nvs_flash json spiffs esp_netif app_update esp_https_ota mqtt
+    REQUIRES esp_wifi esp_http_client esp_http_server esp-tls nvs_flash json spiffs esp_netif app_update esp_https_ota mqtt fatfs sdmmc esp_driver_sdmmc
 )
 
 target_compile_definitions(${COMPONENT_LIB} PRIVATE LV_LVGL_H_INCLUDE_SIMPLE=1)

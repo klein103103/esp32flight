@@ -17,6 +17,9 @@
 #include "lvgl_port.h"
 #include "theme.h"
 #include "routes.h"
+#ifndef APKFLIGHT
+#include "sd_cache.h"
+#endif
 
 #define COL_BG     (app_theme()->bg)
 #define COL_PANEL  (app_theme()->panel)
@@ -182,7 +185,24 @@ static void photo_task(void *arg)
 
     char *json = malloc(8192);
     uint8_t *raw = req->photo_cached ? NULL : heap_caps_malloc(PHOTO_MAX_BYTES, MALLOC_CAP_SPIRAM);
-    if (json != NULL && raw != NULL) {
+#ifndef APKFLIGHT
+    if (raw != NULL && strlen(req->hex) == 6 && strspn(req->hex, "0123456789abcdefABCDEF") == 6) {
+        char path[48];
+        char hex[7];
+        for (size_t i = 0; i < 6; i++) {
+            char c = req->hex[i];
+            hex[i] = c >= 'A' && c <= 'F' ? (char)(c + 'a' - 'A') : c;
+        }
+        hex[6] = '\0';
+        snprintf(path, sizeof(path), "/sd/radar/photos/%s.jpg", hex);
+        size_t size = sd_cache_read(path, raw, PHOTO_MAX_BYTES);
+        if (size > 4) {
+            pixels = jpeg_decode_rgb565(raw, size, 700, 380, &w, &h);
+            if (pixels != NULL) strlcpy(credit, "Photo: SD card", sizeof(credit));
+        }
+    }
+#endif
+    if (pixels == NULL && json != NULL && raw != NULL) {
         char url[256];
         if (from_planespotters(req->hex, url, sizeof(url), credit, sizeof(credit),
                                json, 8192)) {
