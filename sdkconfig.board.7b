@@ -3,6 +3,7 @@
 #   idf.py -B build-7b -D SDKCONFIG_DEFAULTS='sdkconfig.defaults;sdkconfig.board.7b' \
 #     -D SDKCONFIG=build-7b/sdkconfig build
 CONFIG_CANFLIGHT_BOARD_WAVESHARE_7B=y
+CONFIG_FATFS_LFN_HEAP=y
 
 # The hand-tuned display stability set from the August 2026 jitter hunt.
 # These lived only in the standalone sdkconfig.7b and were silently lost

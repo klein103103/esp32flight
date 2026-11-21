@@ -12,6 +12,12 @@
 #include "sdkconfig.h"
 
 static atomic_bool s_ready;
+static esp_err_t s_mount_result = ESP_ERR_INVALID_STATE;
+
+const char *sd_cache_status(void)
+{
+    return esp_err_to_name(s_mount_result);
+}
 
 void sd_cache_init(void)
 {
@@ -32,6 +38,7 @@ void sd_cache_init(void)
     };
     sdmmc_card_t *card = NULL;
     esp_err_t err = esp_vfs_fat_sdmmc_mount("/sd", &host, &slot, &options, &card);
+    s_mount_result = err;
     if (err != ESP_OK) {
         ESP_LOGI("sd_cache", "SD cache unavailable: %s", esp_err_to_name(err));
         return;

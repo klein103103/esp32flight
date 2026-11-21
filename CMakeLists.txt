@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-set(PROJECT_VER "0.5.6")
+set(PROJECT_VER "0.5.7")
 # Board-variant suffix: the 7B and Tab5 builds are not interchangeable with
 # the standard 800x480 binary, and the OTA handler refuses a mismatched
 # image based on this suffix.
@@ -34,6 +34,22 @@ elseif(DEFINED SDKCONFIG_DEFAULTS AND SDKCONFIG_DEFAULTS MATCHES "sunton43r")
 elseif(DEFINED SDKCONFIG_DEFAULTS AND SDKCONFIG_DEFAULTS MATCHES "sunton43")
     set(PROJECT_VER "${PROJECT_VER}-sunton43")
 endif()
+if((DEFINED SDKCONFIG_DEFAULTS AND SDKCONFIG_DEFAULTS MATCHES "7b") OR
+   (DEFINED SDKCONFIG AND SDKCONFIG MATCHES "7b"))
+    # ESP-IDF 5.5 ships the exFAT implementation disabled. Override only
+    # this build's copy of FatFs so the radar can mount factory SDXC cards.
+    set(LOCAL_FATFS "${CMAKE_BINARY_DIR}/components/fatfs")
+    file(COPY "$ENV{IDF_PATH}/components/fatfs/" DESTINATION "${LOCAL_FATFS}")
+    set(FFCONF "${LOCAL_FATFS}/src/ffconf.h")
+    file(READ "${FFCONF}" FFCONF_TEXT)
+    if(NOT FFCONF_TEXT MATCHES "#define[ \t]+FF_FS_EXFAT[ \t]+[01]")
+        message(FATAL_ERROR "Cannot find ESP-IDF FatFs exFAT configuration")
+    endif()
+    string(REGEX REPLACE "(#define[ \t]+FF_FS_EXFAT[ \t]+)[01]" "\\11" FFCONF_TEXT "${FFCONF_TEXT}")
+    file(WRITE "${FFCONF}" "${FFCONF_TEXT}")
+    list(APPEND EXTRA_COMPONENT_DIRS "${LOCAL_FATFS}")
+endif()
+
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 add_compile_options("-Wno-attributes")
 # LVGL object allocations go to PSRAM (internal RAM is reserved for task
