@@ -56,6 +56,7 @@ void sd_cache_init(void)
     mkdir("/sd/radar", 0775);
     mkdir("/sd/radar/tiles", 0775);
     mkdir("/sd/radar/photos", 0775);
+    mkdir("/sd/radar/models", 0775);
     atomic_store(&s_ready, true);
     ESP_LOGI("sd_cache", "SD cache mounted");
 #endif

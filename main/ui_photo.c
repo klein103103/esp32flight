@@ -38,6 +38,8 @@ static lv_obj_t *s_credit;
 static lv_obj_t *s_aircraft_details;
 static uint8_t *s_photo_buf;
 static char s_photo_hex[8];
+static char s_photo_model[5];
+static bool s_photo_exact;
 static char s_photo_credit[128];
 static lv_img_dsc_t s_photo_dsc;
 static bool s_busy;
@@ -56,6 +58,7 @@ typedef struct {
     aircraft_t aircraft;
     bool show_details;
     bool photo_cached;
+    bool model_visible;
 } photo_req_t;
 
 static const char *TAG = "photo";
@@ -274,113 +277,167 @@ static void display_cached_photo(void)
     lv_label_set_text(s_credit, s_photo_credit);
 }
 
+static const char *photo_model(const aircraft_t *aircraft)
+{
+    const char *type = aircraft->type_icao;
+    size_t len = strlen(type);
+    return len >= 2 && len <= 4 && strspn(type, "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789") == len
+           ? type : "";
+}
+
+static bool show_photo(const photo_req_t *req, uint16_t *pixels, int w, int h,
+                       const char *credit, bool exact)
+{
+    bool visible = false;
+    if (lvgl_port_lock(-1)) {
+        if (s_overlay != NULL) {
+            lv_img_cache_invalidate_src(&s_photo_dsc);
+            free(s_photo_buf);
+            s_photo_buf = (uint8_t *)pixels;
+            s_photo_dsc = (lv_img_dsc_t){
+                .header = {.cf = LV_IMG_CF_TRUE_COLOR, .w = w, .h = h},
+                .data = s_photo_buf,
+                .data_size = (uint32_t)w * h * 2,
+            };
+            strlcpy(s_photo_hex, req->hex, sizeof(s_photo_hex));
+            strlcpy(s_photo_model, photo_model(&req->aircraft), sizeof(s_photo_model));
+            strlcpy(s_photo_credit, credit, sizeof(s_photo_credit));
+            s_photo_exact = exact;
+            display_cached_photo();
+            visible = true;
+        }
+        lvgl_port_unlock();
+    }
+    if (!visible) free(pixels);
+    return visible;
+}
+
+#ifndef APKFLIGHT
+static uint16_t *read_photo(const char *path, uint8_t *raw, int *w, int *h, size_t *size)
+{
+    *size = sd_cache_read(path, raw, PHOTO_MAX_BYTES);
+    return *size > 4 ? jpeg_decode_rgb565(raw, *size, 700, 380, w, h) : NULL;
+}
+
+static void save_photo(const char *image, const char *attribution, const char *credit,
+                       const uint8_t *raw, size_t size)
+{
+    if (*image && size > 4 && *credit &&
+        sd_cache_write_photo(attribution, credit, strlen(credit))) {
+        sd_cache_write_photo(image, raw, size);
+    }
+}
+#endif
+
 static void photo_task(void *arg)
 {
     photo_req_t *req = arg;
     char credit[128] = "";
     uint16_t *pixels = NULL;
     int w = 0, h = 0;
-    size_t downloaded_bytes = 0;
-
+    size_t bytes = 0;
+    bool exact = req->photo_cached;
+    bool model_visible = req->model_visible;
+    const char *model = photo_model(&req->aircraft);
+    const bool valid_hex = strlen(req->hex) == 6 && strspn(req->hex, "0123456789abcdefABCDEF") == 6;
     char *json = malloc(8192);
-    uint8_t *raw = req->photo_cached ? NULL : heap_caps_malloc(PHOTO_MAX_BYTES, MALLOC_CAP_SPIRAM);
+    uint8_t *raw = exact ? NULL : heap_caps_malloc(PHOTO_MAX_BYTES, MALLOC_CAP_SPIRAM);
+
 #ifndef APKFLIGHT
-    char cached_image[48] = "", cached_credit[48];
-    if (raw != NULL && strlen(req->hex) == 6 && strspn(req->hex, "0123456789abcdefABCDEF") == 6) {
-        char path[48];
-        char hex[7];
-        for (size_t i = 0; i < 6; i++) {
-            char c = req->hex[i];
-            hex[i] = c >= 'A' && c <= 'F' ? (char)(c + 'a' - 'A') : c;
-        }
-        hex[6] = '\0';
-        snprintf(path, sizeof(path), "/sd/radar/photos/%s.jpg", hex);
-        size_t size = sd_cache_read(path, raw, PHOTO_MAX_BYTES);
-        if (size > 4) {
-            pixels = jpeg_decode_rgb565(raw, size, 700, 380, &w, &h);
-            if (pixels != NULL) strlcpy(credit, "Photo: SD card", sizeof(credit));
-        }
-        if (pixels == NULL) {
-            snprintf(cached_image, sizeof(cached_image), "/sd/radar/cachep/%s.jpg", hex);
-            snprintf(cached_credit, sizeof(cached_credit), "/sd/radar/cachep/%s.txt", hex);
-            size_t credit_size = sd_cache_read(cached_credit, credit, sizeof(credit) - 1);
-            credit[credit_size] = '\0';
-            if (credit_size > 0) {
-                size = sd_cache_read(cached_image, raw, PHOTO_MAX_BYTES);
-                if (size > 4) pixels = jpeg_decode_rgb565(raw, size, 700, 380, &w, &h);
-                if (pixels != NULL) sd_photo_cache_record_hit();
+    char model_image[48] = "", model_credit[48] = "";
+    char exact_image[48] = "", exact_credit[48] = "";
+    if (raw != NULL && *model) {
+        snprintf(model_image, sizeof(model_image), "/sd/radar/models/%s.jpg", model);
+        snprintf(model_credit, sizeof(model_credit), "/sd/radar/models/%s.txt", model);
+        if (!model_visible) {
+            pixels = read_photo(model_image, raw, &w, &h, &bytes);
+            if (pixels != NULL) {
+                size_t n = sd_cache_read(model_credit, credit, sizeof(credit) - 1);
+                credit[n] = '\0';
+                if (n == 0) snprintf(credit, sizeof(credit), "Representative %s • SD card", model);
+                sd_photo_cache_record_hit();
+                model_visible = show_photo(req, pixels, w, h, credit, false);
+                pixels = NULL;
             }
         }
     }
+    if (raw != NULL && valid_hex) {
+        unsigned hex = (unsigned)strtoul(req->hex, NULL, 16);
+        char manual[48];
+        snprintf(manual, sizeof(manual), "/sd/radar/photos/%06x.jpg", hex);
+        snprintf(exact_image, sizeof(exact_image), "/sd/radar/cachep/%06x.jpg", hex);
+        snprintf(exact_credit, sizeof(exact_credit), "/sd/radar/cachep/%06x.txt", hex);
+        pixels = read_photo(manual, raw, &w, &h, &bytes);
+        if (pixels != NULL) {
+            strlcpy(credit, "Photo: SD card", sizeof(credit));
+        } else {
+            size_t n = sd_cache_read(exact_credit, credit, sizeof(credit) - 1);
+            credit[n] = '\0';
+            if (n > 0) pixels = read_photo(exact_image, raw, &w, &h, &bytes);
+        }
+        if (pixels != NULL) {
+            sd_photo_cache_record_hit();
+            if (strncmp(credit, "Representative ", sizeof("Representative ") - 1) == 0) {
+                /* Older firmware stored representative photos under the hex. */
+                if (!model_visible) {
+                    model_visible = show_photo(req, pixels, w, h, credit, false);
+                    save_photo(model_image, model_credit, credit, raw, bytes);
+                } else {
+                    free(pixels);
+                }
+            } else {
+                exact = true;
+                show_photo(req, pixels, w, h, credit, true);
+            }
+            pixels = NULL;
+        }
+    }
 #endif
-    bool route_first = req->show_details && json != NULL && pixels == NULL && !req->photo_cached;
-    if (route_first) show_route_details(req, json, 8192);
-    if (pixels == NULL && json != NULL && raw != NULL) {
+
+    if (!exact && json != NULL && raw != NULL && valid_hex) {
         char url[256];
-        if (from_planespotters("hex", req->hex, url, sizeof(url), credit, sizeof(credit),
-                               json, 8192)) {
-            pixels = fetch_decode(url, raw, &w, &h, &downloaded_bytes);
+        if (from_planespotters("hex", req->hex, url, sizeof(url), credit, sizeof(credit), json, 8192)) {
+            pixels = fetch_decode(url, raw, &w, &h, &bytes);
         }
         const char *reg = req->aircraft.reg;
         if (pixels == NULL && reg[0] &&
             strspn(reg, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-") == strlen(reg) &&
             from_planespotters("reg", reg, url, sizeof(url), credit, sizeof(credit), json, 8192)) {
-            pixels = fetch_decode(url, raw, &w, &h, &downloaded_bytes);
+            pixels = fetch_decode(url, raw, &w, &h, &bytes);
         }
         if (pixels == NULL) {
             char urls[2][256];
             int n = from_adsbdb(req->hex, urls, json, 8192);
             for (int i = 0; i < n && pixels == NULL; i++) {
-                pixels = fetch_decode(urls[i], raw, &w, &h, &downloaded_bytes);
+                pixels = fetch_decode(urls[i], raw, &w, &h, &bytes);
             }
-            if (pixels != NULL) {
-                strlcpy(credit, "photo: airport-data.com", sizeof(credit));
-            }
+            if (pixels != NULL) strlcpy(credit, "Photo: airport-data.com", sizeof(credit));
         }
-        if (pixels == NULL && req->aircraft.type_icao[0]) {
-            if (lvgl_port_lock(-1)) {
-                if (s_overlay != NULL) lv_label_set_text(s_msg, "Looking for a representative photo…");
-                lvgl_port_unlock();
-            }
-            pixels = fetch_representative_photo(&req->aircraft, json, raw, &w, &h,
-                                                &downloaded_bytes, credit, sizeof(credit));
+        if (pixels != NULL) {
+            exact = true;
+            show_photo(req, pixels, w, h, credit, true);
+#ifndef APKFLIGHT
+            save_photo(exact_image, exact_credit, credit, raw, bytes);
+#endif
         }
-    }
-    if (pixels == NULL && !req->photo_cached) {
-        ESP_LOGI(TAG, "%s: no photo from any source", req->hex);
     }
 
-    if (!req->photo_cached && lvgl_port_lock(-1)) {
-        if (s_overlay != NULL) {
-            if (pixels != NULL) {
-                free(s_photo_buf);
-                s_photo_buf = (uint8_t *)pixels;
-                pixels = NULL;
-                memset(&s_photo_dsc, 0, sizeof(s_photo_dsc));
-                s_photo_dsc.header.always_zero = 0;
-                s_photo_dsc.header.cf = LV_IMG_CF_TRUE_COLOR;
-                s_photo_dsc.header.w = w;
-                s_photo_dsc.header.h = h;
-                s_photo_dsc.data = s_photo_buf;
-                s_photo_dsc.data_size = (uint32_t)w * h * 2;
-                strlcpy(s_photo_hex, req->hex, sizeof(s_photo_hex));
-                strlcpy(s_photo_credit, credit, sizeof(s_photo_credit));
-                display_cached_photo();
-            } else {
-                lv_label_set_text(s_msg, L()->no_photo);
-            }
+    if (!exact && !model_visible && raw != NULL && json != NULL && *model) {
+        pixels = fetch_representative_photo(&req->aircraft, json, raw, &w, &h,
+                                            &bytes, credit, sizeof(credit));
+        if (pixels != NULL) {
+            model_visible = show_photo(req, pixels, w, h, credit, false);
+#ifndef APKFLIGHT
+            save_photo(model_image, model_credit, credit, raw, bytes);
+#endif
         }
+    }
+    if (!exact && !model_visible && lvgl_port_lock(-1)) {
+        if (s_overlay != NULL) lv_label_set_text(s_msg, L()->no_photo);
         lvgl_port_unlock();
     }
-    free(pixels);
-#ifndef APKFLIGHT
-    if (downloaded_bytes > 0 && cached_image[0] && credit[0] &&
-        sd_cache_write_photo(cached_credit, credit, strlen(credit))) {
-        sd_cache_write_photo(cached_image, raw, downloaded_bytes);
-    }
-#endif
     free(raw);
-    if (req->show_details && json != NULL && !route_first) show_route_details(req, json, 8192);
+    if (req->show_details && json != NULL) show_route_details(req, json, 8192);
     if (req->show_details && json == NULL && lvgl_port_lock(-1)) {
         if (s_overlay != NULL && s_aircraft_details != NULL) {
             lv_label_set_text(s_aircraft_details, "Extra aircraft and route details unavailable");
@@ -513,10 +570,13 @@ static void open_photo_panel(const char *hex, const char *callsign, const char *
         lv_obj_align(s_credit, LV_ALIGN_BOTTOM_LEFT, UISX(16), -UISY(8));
     }
 
-    bool photo_cached = s_photo_buf != NULL && strcmp(s_photo_hex, hex) == 0;
-    if (photo_cached) {
+    bool photo_cached = s_photo_buf != NULL && s_photo_exact && strcmp(s_photo_hex, hex) == 0;
+    const char *model = photo_model(aircraft);
+    bool model_visible = s_photo_buf != NULL && !s_photo_exact &&
+                         *model && strcmp(s_photo_model, model) == 0;
+    if (photo_cached || model_visible) {
         display_cached_photo();
-        if (!show_details) return;
+        if (photo_cached && !show_details) return;
     }
     photo_req_t *req = malloc(sizeof(photo_req_t));
     if (req != NULL) {
@@ -524,6 +584,7 @@ static void open_photo_panel(const char *hex, const char *callsign, const char *
         if (aircraft != NULL) req->aircraft = *aircraft;
         req->show_details = show_details;
         req->photo_cached = photo_cached;
+        req->model_visible = model_visible;
         s_busy = true;
         if (xTaskCreate(photo_task, "photo", 8192, req, 3, NULL) == pdPASS) {
             return;
@@ -534,7 +595,7 @@ static void open_photo_panel(const char *hex, const char *callsign, const char *
     if (s_aircraft_details != NULL) {
         lv_label_set_text(s_aircraft_details, "Aircraft and route details unavailable");
     }
-    if (!photo_cached) lv_label_set_text(s_msg, L()->no_photo);
+    if (!photo_cached && !model_visible) lv_label_set_text(s_msg, L()->no_photo);
 }
 
 void ui_photo_open(const aircraft_t *aircraft)
