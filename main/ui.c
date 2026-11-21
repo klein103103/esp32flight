@@ -298,7 +298,7 @@ static radar_group_t s_radar_groups[MAX_AIRCRAFT];
 static int s_radar_group_count;
 static lv_obj_t *s_radar_info;
 static lv_obj_t *s_radar_bub, *s_radar_blogo;
-static bool s_radar_bub_off;   /* tapped away by the user (#9) */
+static bool s_radar_bub_off = true;   /* tapped away by the user (#9) */
 static lv_obj_t *s_radar_range;
 static lv_obj_t *s_radar_source;
 static bool s_radar_show_rings;
@@ -2672,9 +2672,12 @@ static void render_radar_panel(void)
     int rpx = RADAR_R;
 
     if (map_mode) {
-        radar_project(s_home_lat, s_home_lon, &hx, &hy);
+        double area_lat = s_radar_follow_map ? s_radar_center_lat : s_home_lat;
+        double area_lon = s_radar_follow_map ? s_radar_center_lon : s_home_lon;
+        radar_project(area_lat, area_lon, &hx, &hy);
+        double edge_lon = area_lon + radius_nm * 1.852 / (111.0 * fmax(0.1, cos(area_lat * M_PI / 180.0)));
         int ex, ey;
-        radar_project(s_home_lat, s_radar_bbox[3], &ex, &ey);
+        radar_project(area_lat, edge_lon, &ex, &ey);
         rpx = ex - hx;
         if (rpx < 20) {
             rpx = 20;
@@ -2690,7 +2693,7 @@ static void render_radar_panel(void)
         lv_obj_add_flag(s_radar_rings[0], LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(s_radar_rings[1], LV_OBJ_FLAG_HIDDEN);
         lv_obj_set_pos(s_radar_home, hx - UISX(5), hy - UISY(5));
-        lv_label_set_text_fmt(s_radar_range, "%d km", (int)(radius_nm * 1.852));
+        lv_label_set_text_fmt(s_radar_range, "%d NM", radius_nm);
     } else {
         lv_obj_add_flag(s_radar_img, LV_OBJ_FLAG_HIDDEN);
         for (int i = 0; i < 3; i++) {
@@ -2700,7 +2703,7 @@ static void render_radar_panel(void)
             lv_obj_set_pos(s_radar_rings[i], RADAR_CX - r, RADAR_CY - r);
         }
         lv_obj_set_pos(s_radar_home, RADAR_CX - UISX(5), RADAR_CY - UISY(5));
-        lv_label_set_text_fmt(s_radar_range, L()->ring_fmt, (int)(radius_nm * 1.852 / 3));
+        lv_label_set_text_fmt(s_radar_range, "%.1f NM per ring", radius_nm / 3.0);
     }
 
     radar_offline_airports(!map_mode, radius_nm);
@@ -4922,6 +4925,7 @@ void ui_update(const aircraft_list_t *list)
         }
     }
     if (s_selected < 0 && !radar_pin_available && s_shown_count > 0) {
+        s_radar_bub_off = true;
         s_selected = 0;
         strlcpy(s_selected_hex, s_shown[0].ac.hex, sizeof(s_selected_hex));
     }

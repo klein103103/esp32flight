@@ -62,7 +62,6 @@ static lv_obj_t *s_dd_amb_style;
 static lv_obj_t *s_sw_map_light;
 static lv_obj_t *s_sw_ladsb;
 static lv_obj_t *s_sw_retro_map;
-static lv_obj_t *s_slider_radius, *s_radius_label;
 static lv_obj_t *s_ta_poll_seconds;
 static lv_obj_t *s_dd_aircraft_motion;
 static lv_obj_t *s_sw_tz_manual, *s_ta_tz_offset;
@@ -280,13 +279,6 @@ static void brightness_cb(lv_event_t *e)
 }
 #endif
 
-static void radius_cb(lv_event_t *e)
-{
-    int nm = lv_slider_get_value(s_slider_radius);
-    char buf[48];
-    snprintf(buf, sizeof(buf), "%d nm  (%d km)", nm, (int)(nm * 1.852));
-    lv_label_set_text(s_radius_label, buf);
-}
 
 static void install_private_update_cb(lv_event_t *e)
 {
@@ -367,7 +359,6 @@ static void save_cb(lv_event_t *e)
     cfg->use_fixed_loc = !lv_obj_has_state(s_sw_auto, LV_STATE_CHECKED);
     cfg->lat = atof(lv_textarea_get_text(s_ta_lat));
     cfg->lon = atof(lv_textarea_get_text(s_ta_lon));
-    cfg->radius_nm = lv_slider_get_value(s_slider_radius);
     cfg->aircraft_motion = (uint8_t)lv_dropdown_get_selected(s_dd_aircraft_motion);
     cfg->time_zone_manual = lv_obj_has_state(s_sw_tz_manual, LV_STATE_CHECKED);
     const char *offset_text = lv_textarea_get_text(s_ta_tz_offset);
@@ -383,7 +374,6 @@ static void save_cb(lv_event_t *e)
     }
     strlcpy(cfg->track_id, lv_textarea_get_text(s_ta_track), sizeof(cfg->track_id));
     cfg->track_on = lv_obj_has_state(s_sw_track, LV_STATE_CHECKED) && cfg->track_id[0] != '\0';
-    cfg->hide_ground = lv_obj_has_state(s_sw_ground, LV_STATE_CHECKED);
     cfg->hide_private = false;   /* legacy switch, superseded by the class mask */
     cfg->show_classes = 0;
     for (int i = 0; i < FCLS_COUNT; i++) {
@@ -716,17 +706,7 @@ void ui_settings_open(void)
         lv_obj_add_state(s_ta_lat, LV_STATE_DISABLED);
         lv_obj_add_state(s_ta_lon, LV_STATE_DISABLED);
     }
-    add_label(p, L()->search_radius, 0, 226);
-    s_slider_radius = lv_slider_create(p);
-    lv_obj_set_size(s_slider_radius, UISX(420), UISY(16));
-    lv_obj_set_pos(s_slider_radius, 0, UISY(258));
-    lv_slider_set_range(s_slider_radius, 1, 250);
-    lv_slider_set_value(s_slider_radius, cfg->radius_nm, LV_ANIM_OFF);
-    lv_obj_add_event_cb(s_slider_radius, radius_cb, LV_EVENT_VALUE_CHANGED, NULL);
-    s_radius_label = add_label(p, "", 440, 254);
-    lv_obj_set_style_text_color(s_radius_label, COL_TEXT, 0);
-    snprintf(buf, sizeof(buf), "%d nm  (%d km)", cfg->radius_nm, (int)(cfg->radius_nm * 1.852));
-    lv_label_set_text(s_radius_label, buf);
+    add_hint(p, "Change the tracking radius from the range menu on the radar.", 0, 238, 620);
 
     /* track one flight anywhere (callsign, registration or hex) */
     add_label(p, L()->track_lbl, 0, 304);
@@ -747,7 +727,7 @@ void ui_settings_open(void)
     /* --- Filters + alerts --- */
     p = tab_page(tv, L()->tab_filters);
     add_section(p, L()->sec_traffic, 0);
-    s_sw_ground = add_switch(p, L()->hide_ground, 0, 32, cfg->hide_ground);
+    add_hint(p, "Use Ground traffic on the radar to include surface traffic.", 0, 32, 740);
     add_label(p, L()->lbl_altmin, 0, 88);
     snprintf(buf, sizeof(buf), "%d", cfg->alt_min_ft);
     s_ta_altmin = add_textarea(p, 0, 112, 140, buf, false);
