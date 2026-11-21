@@ -22,6 +22,7 @@
 #include "settings.h"
 #ifndef APKFLIGHT
 #include "waveshare_rgb_lcd_port.h"
+#include "wifi_setup.h"
 #endif
 #include "wifi_mgr.h"
 
@@ -294,6 +295,23 @@ static void install_private_update_cb(lv_event_t *e)
     }
 #endif
 }
+
+#ifndef APKFLIGHT
+static void phone_setup_cb(lv_event_t *event)
+{
+    (void)event;
+    char password[13];
+    if (wifi_setup_start(password, sizeof(password)) != ESP_OK) {
+        ui_toast("Could not start phone setup");
+        return;
+    }
+    char instructions[180];
+    snprintf(instructions, sizeof(instructions),
+             "Join Radar-Setup on your phone.\nPassword: %s\nOpen http://192.168.4.1:8081/\nThe setup network closes in 5 minutes.", password);
+    lv_obj_t *box = lv_msgbox_create(NULL, "Phone Wi-Fi setup", instructions, NULL, true);
+    lv_obj_center(box);
+}
+#endif
 
 static void ota_unlock_cb(lv_event_t *e)
 {
@@ -667,6 +685,7 @@ void ui_settings_open(void)
     lv_dropdown_set_text(s_dd_networks, L()->dd_networks);
     add_label(p, L()->password, 0, 84);
     s_ta_pass = add_textarea(p, 0, 108, 380, "", true);
+    add_button(p, 0, 176, 230, 44, "Set up from phone", phone_setup_cb, COL_PANEL);
 #endif
 
     /* --- Location --- */

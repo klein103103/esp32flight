@@ -18,6 +18,7 @@ idf_component_register(
         "geo_math.c"
         "http_util.c"
         "wifi_mgr.c"
+        "wifi_setup.c"
         "geolocate.c"
         "flight_data.c"
         "routes.c"
