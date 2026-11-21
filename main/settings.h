@@ -45,6 +45,7 @@ typedef struct {
     bool    rain_overlay;     /* RainViewer precipitation layer on maps/radar */
     bool    show_route;       /* route codes on list rows + cities in the map bubble (#28) */
     bool    brightness_ctl;  /* master enable for backlight dimming, off = stock behavior */
+    uint8_t night_brightness;
     uint8_t brightness;       /* 5..100, applied where the backlight can dim (#13/HA) */
     bool    clock_12h;        /* AM/PM clock everywhere a time is shown */
     char    input_map[176];   /* physical input mapping, see input_ctl.c (#13) */

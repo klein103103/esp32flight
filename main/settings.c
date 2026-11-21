@@ -44,6 +44,7 @@ void settings_load(void)
     s_settings.show_route = false;
     s_settings.brightness_ctl = false;
     s_settings.brightness = 100;
+    s_settings.night_brightness = 25;
     s_settings.clock_12h = false;
     s_settings.input_map[0] = '\0';
     s_settings.map_light = false;
@@ -150,6 +151,9 @@ void settings_load(void)
     }
     if (nvs_get_u8(h, "bright", &hide) == ESP_OK && hide >= 5 && hide <= 100) {
         s_settings.brightness = hide;
+    }
+    if (nvs_get_u8(h, "night_bright", &hide) == ESP_OK && hide >= 5 && hide <= 100) {
+        s_settings.night_brightness = hide;
     }
     if (nvs_get_u8(h, "clk12", &hide) == ESP_OK) {
         s_settings.clock_12h = hide != 0;
@@ -319,6 +323,7 @@ esp_err_t settings_save(void)
     nvs_set_u8(h, "showroute", s_settings.show_route ? 1 : 0);
     nvs_set_u8(h, "brightctl", s_settings.brightness_ctl ? 1 : 0);
     nvs_set_u8(h, "bright", s_settings.brightness);
+    nvs_set_u8(h, "night_bright", s_settings.night_brightness);
     nvs_set_u8(h, "clk12", s_settings.clock_12h ? 1 : 0);
     nvs_set_str(h, "inputmap", s_settings.input_map);
     nvs_set_u8(h, "amb_style", s_settings.amb_style);

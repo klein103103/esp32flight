@@ -229,14 +229,41 @@ static char s_weather_txt[96];
 static bool s_bl_off;
 static bool s_bl_forced;   /* switched off by API/MQTT/button: stays dark until a tap or screen_on */
 
-/* Re-assert the configured brightness after a full-on: bl_on() drives the
- * panel to maximum on every board. No-op at 100%% or on on/off-only
- * backlights (CH422G). Exposed for the settings slider and input actions. */
+static int s_brightness_override = -1;
+static int s_brightness_override_period = -1;
+static int s_brightness_applied = -1;
+
+static int brightness_period(void)
+{
+    const settings_t *cfg = settings_get();
+    time_t now = time(NULL);
+    if (!cfg->night_enabled || now < 1600000000 || !tz_home_known()) {
+        return -1;
+    }
+    time_t local = now + tz_home_offset();
+    struct tm tm;
+    gmtime_r(&local, &tm);
+    int minute = tm.tm_hour * 60 + tm.tm_min;
+    int start = cfg->night_start_min, end = cfg->night_end_min;
+    return start <= end ? (minute >= start && minute < end) : (minute >= start || minute < end);
+}
+
+static int effective_brightness(void)
+{
+    const settings_t *cfg = settings_get();
+    int period = brightness_period();
+    if (s_brightness_override >= 0 && period == s_brightness_override_period) {
+        return s_brightness_override;
+    }
+    s_brightness_override = -1;
+    return period == 1 ? cfg->night_brightness : (cfg->brightness_ctl || period == 0 ? cfg->brightness : 100);
+}
+
 void ui_apply_brightness(void)
 {
-    const settings_t *c = settings_get();
-    if (c->brightness_ctl && c->brightness < 100 && waveshare_rgb_lcd_bl_dimmable()) {
-        waveshare_rgb_lcd_bl_pct(c->brightness);
+    if (waveshare_rgb_lcd_bl_dimmable()) {
+        s_brightness_applied = effective_brightness();
+        waveshare_rgb_lcd_bl_pct(s_brightness_applied);
     }
 }
 
@@ -1788,6 +1815,26 @@ static void radar_save_home_cb(lv_event_t *event)
     lv_msgbox_close(box);
 }
 
+static void radar_brightness_change_cb(lv_event_t *event)
+{
+    s_brightness_override = lv_slider_get_value(lv_event_get_target(event));
+    s_brightness_override_period = brightness_period();
+    ui_apply_brightness();
+}
+
+static void radar_brightness_cb(lv_event_t *event)
+{
+    (void)event;
+    lv_obj_t *box = lv_msgbox_create(NULL, "Brightness", "Manual adjustment until the next scheduled change", NULL, true);
+    lv_obj_center(box);
+    lv_obj_t *slider = lv_slider_create(lv_msgbox_get_content(box));
+    lv_obj_set_width(slider, UISX(220));
+    lv_obj_set_style_pad_top(lv_msgbox_get_content(box), UISY(12), 0);
+    lv_slider_set_range(slider, 5, 100);
+    lv_slider_set_value(slider, effective_brightness(), LV_ANIM_OFF);
+    lv_obj_add_event_cb(slider, radar_brightness_change_cb, LV_EVENT_VALUE_CHANGED, NULL);
+}
+
 static void radar_set_home_cb(lv_event_t *event)
 {
     (void)event;
@@ -1969,6 +2016,15 @@ static void build_radar_panel(lv_obj_t *scr)
     lv_obj_t *set_home_text = make_label(set_home, UIFONT(&font_pl_14, &font_pl_8), COL_TEXT);
     lv_label_set_text(set_home_text, "Set Home");
     lv_obj_center(set_home_text);
+    if (waveshare_rgb_lcd_bl_dimmable()) {
+        lv_obj_t *brightness = lv_btn_create(s_radar_panel);
+        lv_obj_set_size(brightness, UISX(112), UISY(32));
+        lv_obj_align(brightness, LV_ALIGN_TOP_LEFT, UISX(10), UISY(84));
+        lv_obj_add_event_cb(brightness, radar_brightness_cb, LV_EVENT_CLICKED, NULL);
+        lv_obj_t *text = make_label(brightness, UIFONT(&font_pl_14, &font_pl_8), COL_TEXT);
+        lv_label_set_text(text, "Brightness");
+        lv_obj_center(text);
+    }
 }
 
 /* ---------- optional extra objects: ISS, radiosondes, AIS ships ---------- */
@@ -3243,7 +3299,11 @@ static void idle_timer_cb(lv_timer_t *t)
         amb_close();
     }
 
-    if (cfg->night_enabled) {
+    if (waveshare_rgb_lcd_bl_dimmable()) {
+        if (!s_bl_off && s_brightness_applied != effective_brightness()) {
+            ui_apply_brightness();
+        }
+    } else if (cfg->night_enabled) {
         time_t now = time(NULL);
         if (now > 1600000000) {
             time_t l = now + (tz_home_known() ? tz_home_offset() : 0);

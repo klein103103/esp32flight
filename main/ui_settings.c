@@ -61,6 +61,7 @@ static lv_obj_t *s_sw_ladsb;
 static lv_obj_t *s_sw_retro_map;
 static lv_obj_t *s_slider_radius, *s_radius_label;
 static lv_obj_t *s_ta_poll_seconds;
+static lv_obj_t *s_slider_night_bright;
 #ifndef APKFLIGHT
 static lv_obj_t *s_ta_flyitaly_key;
 #endif
@@ -376,6 +377,9 @@ static void save_cb(lv_event_t *e)
 #ifndef APKFLIGHT
     if (s_slider_bright != NULL) {
         cfg->brightness = (uint8_t)lv_slider_get_value(s_slider_bright);
+    }
+    if (s_slider_night_bright != NULL) {
+        cfg->night_brightness = (uint8_t)lv_slider_get_value(s_slider_night_bright);
     }
     if (s_sw_brightctl != NULL) {
         cfg->brightness_ctl = lv_obj_has_state(s_sw_brightctl, LV_STATE_CHECKED);
@@ -804,7 +808,7 @@ void ui_settings_open(void)
     lv_dropdown_set_selected(s_dd_metar, cfg->metar_decoded ? 1 : 0);
 
     add_section(p, L()->sec_screen, 202);
-    s_sw_night = add_switch(p, L()->night_lbl, 0, 234, cfg->night_enabled);
+    s_sw_night = add_switch(p, "Day/night schedule", 0, 234, cfg->night_enabled);
     add_label(p, L()->night_from, 380, 228);
     snprintf(buf, sizeof(buf), "%02d:%02d", cfg->night_start_min / 60, cfg->night_start_min % 60);
     s_ta_night_from = add_textarea(p, 380, 252, 110, buf, false);
@@ -832,11 +836,18 @@ void ui_settings_open(void)
     s_sw_retro_map = add_switch(p, L()->retro_map_lbl, 380, 596, cfg->retro_map);
     s_sw_clk12 = add_switch(p, L()->clk12_lbl, 0, 648, cfg->clock_12h);
     s_slider_bright = NULL;
+    s_slider_night_bright = NULL;
     s_sw_brightctl = NULL;
 #ifndef APKFLIGHT
     if (waveshare_rgb_lcd_bl_dimmable()) {
         s_sw_brightctl = add_switch(p, L()->brightctl_lbl, 380, 642, cfg->brightness_ctl);
-        add_label(p, L()->bright_lbl, 380, 694);
+        add_label(p, "Day brightness", 380, 694);
+        add_label(p, "Night brightness", 0, 694);
+        s_slider_night_bright = lv_slider_create(p);
+        lv_obj_set_size(s_slider_night_bright, UISX(240), UISY(16));
+        lv_obj_set_pos(s_slider_night_bright, UISX(108), UISY(706));
+        lv_slider_set_range(s_slider_night_bright, 5, 100);
+        lv_slider_set_value(s_slider_night_bright, cfg->night_brightness, LV_ANIM_OFF);
         s_slider_bright = lv_slider_create(p);
         lv_obj_set_size(s_slider_bright, UISX(280), UISY(16));
         lv_obj_set_pos(s_slider_bright, UISX(460), UISY(706));
