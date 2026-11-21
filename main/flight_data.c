@@ -314,12 +314,36 @@ static int64_t provider_retry_at(esp_err_t err, int64_t now_ms, int64_t earliest
     return earliest_ms;
 }
 
+static esp_err_t fetch_flyitaly(double lat, double lon, int radius_nm,
+                                aircraft_list_t *out, char *buf, esp_err_t last_error)
+{
+    const char *key = settings_get()->flyitaly_key;
+    static int64_t retry_at_ms;
+    int64_t now_ms = esp_timer_get_time() / 1000;
+    if (key[0] == '\0' || now_ms < retry_at_ms) {
+        return last_error;
+    }
+    char url[128];
+    snprintf(url, sizeof(url), "https://api.flyitalyadsb.com/v2/lat/%.4f/lon/%.4f/dist/%d",
+             lat, lon, (int)(radius_nm * 1.852 + 0.5));
+    esp_err_t err = http_get_to_buffer_hdr(url, buf, FETCH_BUF_SIZE, NULL, "X-Api-Key", key);
+    retry_at_ms = provider_retry_at(err, now_ms, now_ms + 10000);
+    if (err == ESP_OK) {
+        err = parse_point_response(buf, lat, lon, out);
+    }
+    if (err == ESP_OK) {
+        out->source = "FlyItalyADSB";
+    }
+    return err;
+}
+
 static esp_err_t fetch_internet(double lat, double lon, int radius_nm,
                                 aircraft_list_t *out, char *buf)
 {
     static int64_t primary_retry_at_ms;
     static int64_t fallback_retry_at_ms;
     static unsigned primary_failures;
+    static bool fallback_healthy;
     int64_t now_ms = esp_timer_get_time() / 1000;
     esp_err_t err = ESP_ERR_TIMEOUT;
     char url[128];
@@ -347,8 +371,11 @@ static esp_err_t fetch_internet(double lat, double lon, int radius_nm,
         ESP_LOGW(TAG, "adsb.fi request failed (%s)", esp_err_to_name(err));
     }
 
-    if (primary_failures < 2 || now_ms < fallback_retry_at_ms) {
+    if (primary_failures < 2) {
         return err;
+    }
+    if (now_ms < fallback_retry_at_ms) {
+        return fallback_healthy ? err : fetch_flyitaly(lat, lon, radius_nm, out, buf, err);
     }
 
     now_ms = esp_timer_get_time() / 1000;
@@ -365,13 +392,14 @@ static esp_err_t fetch_internet(double lat, double lon, int radius_nm,
     if (err == ESP_OK) {
         err = parse_point_response(buf, lat, lon, out);
     }
-    if (err == ESP_OK) {
+    fallback_healthy = err == ESP_OK;
+    if (fallback_healthy) {
         out->source = "adsb.lol";
         ESP_LOGI(TAG, "using adsb.lol fallback");
-    } else {
-        ESP_LOGW(TAG, "adsb.lol request failed (%s)", esp_err_to_name(err));
+        return ESP_OK;
     }
-    return err;
+    ESP_LOGW(TAG, "adsb.lol request failed (%s)", esp_err_to_name(err));
+    return fetch_flyitaly(lat, lon, radius_nm, out, buf, err);
 }
 
 /* LAN receiver URL with a bare host name ("http://adsbpi:8080/...") that

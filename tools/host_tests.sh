@@ -117,6 +117,8 @@ static int64_t clock_ms;
 static int calls[2];
 static int replies[2];
 static int retry_after;
+static struct { char flyitaly_key[128]; } test_settings;
+#define settings_get() (&test_settings)
 
 static int64_t esp_timer_get_time(void) { return clock_ms * 1000; }
 
@@ -137,6 +139,16 @@ static int http_get_rate_limited(const char *url, char *buf, size_t size, int *r
     return http_get_keepalive(1, url, buf, size, NULL);
 }
 
+static int http_get_to_buffer_hdr(const char *url, char *buf, size_t size,
+                                  size_t *length, const char *header, const char *key)
+{
+    (void)length;
+    assert(strcmp(header, "X-Api-Key") == 0 && strcmp(key, "test-key") == 0);
+    assert(strstr(url, "api.flyitalyadsb.com/v2/") && strstr(url, "/dist/46"));
+    snprintf(buf, size, "empty aircraft list");
+    return ESP_OK;
+}
+
 static int parse_point_response(const char *buf, double lat, double lon,
                                 aircraft_list_t *out)
 {
@@ -155,7 +167,17 @@ int main(int argc, char **argv)
     char buf[FETCH_BUF_SIZE];
     aircraft_list_t out = {0};
     assert(argc == 2);
-    if (strcmp(argv[1], "refused") == 0) {
+    if (strcmp(argv[1], "third") == 0) {
+        strcpy(test_settings.flyitaly_key, "test-key");
+        replies[0] = ESP_ERR_HTTP_BASE + 403;
+        replies[1] = ESP_ERR_HTTP_BASE + 429;
+        assert(fetch_internet(0, 0, 25, &out, buf) == ESP_OK);
+        assert(strcmp(out.source, "FlyItalyADSB") == 0);
+        clock_ms = 5000;
+        assert(fetch_internet(0, 0, 25, &out, buf) != ESP_OK);
+        clock_ms = 10000;
+        assert(fetch_internet(0, 0, 25, &out, buf) == ESP_OK);
+    } else if (strcmp(argv[1], "refused") == 0) {
         replies[0] = ESP_ERR_HTTP_BASE + 403;
         assert(fetch_internet(0, 0, 25, &out, buf) == ESP_OK);
         assert(calls[0] == 1 && calls[1] == 1);
@@ -203,6 +225,7 @@ EOF
 cc -std=c11 -Wall -Wextra -Werror -o "$tmp/providers" "$tmp/providers.c"
 "$tmp/providers" recovery
 "$tmp/providers" refused
+"$tmp/providers" third
 echo "provider tests passed"
 
 echo "host tests passed"

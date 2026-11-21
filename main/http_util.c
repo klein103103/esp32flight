@@ -80,7 +80,7 @@ static esp_err_t get_with_hdr_t(const char *url, char *buf, size_t buf_size, siz
         .user_data = &sink,
         .timeout_ms = timeout_ms,
         .crt_bundle_attach = esp_crt_bundle_attach,
-        .disable_auto_redirect = false,
+        .disable_auto_redirect = hdr_key != NULL && strcmp(hdr_key, "X-Api-Key") == 0,
         .user_agent = "esp32flight/0.4 (+https://github.com/theqkash/esp32flight)",
     };
     esp_http_client_handle_t client = esp_http_client_init(&config);

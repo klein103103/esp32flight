@@ -21,6 +21,7 @@ typedef struct {
     /* integrations, edited via the web panel (/api/config) */
     char   ntfy_topic[48];  /* ntfy.sh topic for push notifications */
     char   mqtt_uri[96];    /* e.g. mqtt://user:pass@192.168.1.5:1883 */
+    char   flyitaly_key[128];
     char   fa_key[48];      /* FlightAware AeroAPI key (IATA flight numbers) */
     char   watch_regs[96];  /* comma-separated watchlist (regs/callsign prefixes) */
     char   webhook_url[96]; /* generic JSON webhook for events */

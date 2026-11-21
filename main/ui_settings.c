@@ -61,6 +61,9 @@ static lv_obj_t *s_sw_ladsb;
 static lv_obj_t *s_sw_retro_map;
 static lv_obj_t *s_slider_radius, *s_radius_label;
 static lv_obj_t *s_ta_poll_seconds;
+#ifndef APKFLIGHT
+static lv_obj_t *s_ta_flyitaly_key;
+#endif
 
 static bool s_scan_busy;
 static bool s_geo_busy;
@@ -401,6 +404,9 @@ static void save_cb(lv_event_t *e)
     strlcpy(cfg->watch_regs, lv_textarea_get_text(s_ta_watch), sizeof(cfg->watch_regs));
     strlcpy(cfg->ntfy_topic, lv_textarea_get_text(s_ta_ntfy), sizeof(cfg->ntfy_topic));
     strlcpy(cfg->mqtt_uri, lv_textarea_get_text(s_ta_mqtt), sizeof(cfg->mqtt_uri));
+#ifndef APKFLIGHT
+    strlcpy(cfg->flyitaly_key, lv_textarea_get_text(s_ta_flyitaly_key), sizeof(cfg->flyitaly_key));
+#endif
     strlcpy(cfg->fa_key, lv_textarea_get_text(s_ta_fa), sizeof(cfg->fa_key));
     strlcpy(cfg->webhook_url, lv_textarea_get_text(s_ta_webhook), sizeof(cfg->webhook_url));
     strlcpy(cfg->local_adsb, lv_textarea_get_text(s_ta_ladsb), sizeof(cfg->local_adsb));
@@ -767,6 +773,12 @@ void ui_settings_open(void)
     add_label(p, L()->lbl_mqtt, 0, 664);
     s_ta_mqtt = add_textarea(p, 0, 688, 360, cfg->mqtt_uri, false);
     add_hint(p, L()->hint_mqtt, 0, 734, 740);
+
+#ifndef APKFLIGHT
+    add_label(p, "FlyItalyADSB fallback key (optional)", 0, 804);
+    s_ta_flyitaly_key = add_textarea(p, 0, 828, 360, cfg->flyitaly_key, true);
+    lv_textarea_set_max_length(s_ta_flyitaly_key, sizeof(cfg->flyitaly_key) - 1);
+#endif
 
     /* --- System --- */
     p = tab_page(tv, L()->tab_system);

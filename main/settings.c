@@ -168,6 +168,7 @@ void settings_load(void)
     }
     get_str(h, "ntfy", s_settings.ntfy_topic, sizeof(s_settings.ntfy_topic));
     get_str(h, "mqtt", s_settings.mqtt_uri, sizeof(s_settings.mqtt_uri));
+    get_str(h, "flyitaly_key", s_settings.flyitaly_key, sizeof(s_settings.flyitaly_key));
     get_str(h, "fakey", s_settings.fa_key, sizeof(s_settings.fa_key));
     uint16_t u16 = 0;
     if (nvs_get_u16(h, "falimit", &u16) == ESP_OK && u16 > 0) {
@@ -325,6 +326,7 @@ esp_err_t settings_save(void)
     nvs_set_u8(h, "lang", (uint8_t)s_settings.lang);
     nvs_set_str(h, "ntfy", s_settings.ntfy_topic);
     nvs_set_str(h, "mqtt", s_settings.mqtt_uri);
+    nvs_set_str(h, "flyitaly_key", s_settings.flyitaly_key);
     nvs_set_str(h, "fakey", s_settings.fa_key);
     nvs_set_u16(h, "falimit", s_settings.fa_limit);
     nvs_set_str(h, "watch", s_settings.watch_regs);
