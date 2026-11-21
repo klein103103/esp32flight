@@ -388,6 +388,8 @@ static char          s_retro_map_key[48];
 static uint16_t     *s_radar_tiles;
 static lv_img_dsc_t  s_radar_tiles_dsc;
 static tile_view_t   s_radar_view;
+static double s_radar_frame_zoom = 1.0, s_radar_job_zoom = 1.0;
+static float s_radar_preview_scale = 1.0f;
 static double s_radar_zoom = 1.0;   /* window multiplier, <1 = closer */
 static float  s_radar_scale = 1.0f; /* post-render upscale to fill the panel */
 static int    s_radar_spx, s_radar_spy;
@@ -1700,7 +1702,7 @@ static void radar_tiles_job(void)
     const unsigned pan_revision = s_radar_job_pan_revision;
     char key[48];
     double b[4];
-    double zoom = s_radar_zoom;
+    double zoom = s_radar_job_zoom;
     strlcpy(key, s_radar_want, sizeof(key));
     memcpy(b, s_radar_bbox, sizeof(b));
 
@@ -1782,9 +1784,9 @@ static void radar_tiles_job(void)
             s_radar_tiles_dsc.data = (const uint8_t *)s_radar_tiles;
             s_radar_tiles_dsc.data_size = (size_t)RADAR_RENDER_W * RADAR_RENDER_H * 2;
             lv_img_set_src(s_radar_img, &s_radar_tiles_dsc);
-            if (RADAR_W > RADAR_RENDER_W) {
-                lv_img_set_zoom(s_radar_img, (uint16_t)(RADAR_K * 256.0f + 0.5f));
-            }
+            s_radar_frame_zoom = zoom;
+            s_radar_preview_scale = 1.0f;
+            lv_img_set_zoom(s_radar_img, (uint16_t)(RADAR_K * 256.0f + 0.5f));
             s_radar_pan_x = 0;
             s_radar_pan_y = 0;
             radar_position_cached_map();
@@ -1836,6 +1838,7 @@ static void radar_tiles_want(void)
                 s_home_lat, s_home_lon, radius_nm);
     strlcpy(s_radar_want, key, sizeof(s_radar_want));
     s_radar_job_pan_revision = s_radar_pan_revision;
+    s_radar_job_zoom = s_radar_zoom;
     s_radar_busy = true;
     ESP_LOGI(TAG, "radar tiles: spawn for %s", key);
     if (!tilemap_worker_submit(radar_tiles_job)) {
@@ -1844,9 +1847,9 @@ static void radar_tiles_want(void)
     }
 }
 
-static void radar_zoom_cb(lv_event_t *e)
+static void radar_zoom_step(int dir)
 {
-    int dir = (int)(intptr_t)lv_event_get_user_data(e);
+    if (s_radar_pan_active) return;
     double z = s_radar_zoom * (dir > 0 ? 1.0 / 1.5 : 1.5);
     if (z < 0.18) {
         z = 0.18;
@@ -1857,8 +1860,25 @@ static void radar_zoom_cb(lv_event_t *e)
     if (z > 0.95 && z < 1.06) {
         z = 1.0;   /* snap back to the exact radius fit */
     }
+    if (z == s_radar_zoom) return;
     s_radar_zoom = z;
-    radar_tiles_want();
+    ++s_radar_pan_revision;
+    if (s_view_mode == VIEW_RADAR) {
+        if (s_radar_view_ok) {
+            /* Reuse the last frame while the worker prepares the latest view. */
+            uint16_t zoom = (uint16_t)(RADAR_K * 256.0 * s_radar_frame_zoom / z + 0.5);
+            s_radar_preview_scale = zoom / (RADAR_K * 256.0f);
+            lv_img_set_zoom(s_radar_img, zoom);
+        }
+        render_radar_panel();
+    } else {
+        radar_tiles_want();
+    }
+}
+
+static void radar_zoom_cb(lv_event_t *e)
+{
+    radar_zoom_step((int)(intptr_t)lv_event_get_user_data(e));
 }
 
 static bool radar_zoom_to_group(int index);
@@ -1965,7 +1985,7 @@ static void radar_pan_cb(lv_event_t *event)
 
     double phi = s_radar_center_lat * M_PI / 180.0;
     if (s_radar_view_ok) {
-        double span = ldexp(256.0, s_radar_view.z) * s_radar_scale * RADAR_K;
+        double span = ldexp(256.0, s_radar_view.z) * s_radar_scale * RADAR_K * s_radar_preview_scale;
         double mercator_y = asinh(tan(phi)) + dy * (2.0 * M_PI / span);
         s_radar_center_lat = fmax(-82.0, fmin(82.0, atan(sinh(mercator_y)) * 180.0 / M_PI));
         s_radar_center_lon = remainder(s_radar_center_lon - dx * (360.0 / span), 360.0);
@@ -2116,6 +2136,7 @@ static void build_radar_panel(lv_obj_t *scr)
 
     /* home-area tile map in the background (falls back to plain rings) */
     s_radar_img = lv_img_create(s_radar_panel);
+    lv_img_set_antialias(s_radar_img, false);
     lv_obj_set_pos(s_radar_img, 0, 0);
     lv_obj_add_flag(s_radar_img, LV_OBJ_FLAG_HIDDEN);
 
@@ -2188,7 +2209,7 @@ static void build_radar_panel(lv_obj_t *scr)
         lv_obj_set_style_bg_opa(zb, LV_OPA_90, 0);
         lv_obj_set_style_shadow_width(zb, 12, 0);
         lv_obj_set_style_shadow_opa(zb, LV_OPA_40, 0);
-        lv_obj_add_event_cb(zb, radar_zoom_cb, LV_EVENT_CLICKED,
+        lv_obj_add_event_cb(zb, radar_zoom_cb, LV_EVENT_PRESSED,
                             (void *)(intptr_t)(zi == 0 ? 1 : -1));
         lv_obj_t *zl = lv_label_create(zb);
         lv_obj_set_style_text_color(zl, COL_BG, 0);
@@ -2335,8 +2356,9 @@ static void radar_project(double lat, double lon, int *x, int *y)
         *y = s_radar_spy + (int)((*y - s_radar_spy) * s_radar_scale);
     }
     /* render space -> panel space (identity on 800x480) */
-    *x = RADAR_W / 2 + (int)((*x - RADAR_RENDER_W / 2) * RADAR_K) + s_radar_pan_x;
-    *y = RADAR_H / 2 + (int)((*y - RADAR_RENDER_H / 2) * RADAR_K) + s_radar_pan_y;
+    float scale = RADAR_K * s_radar_preview_scale;
+    *x = RADAR_W / 2 + (int)((*x - RADAR_RENDER_W / 2) * scale) + s_radar_pan_x;
+    *y = RADAR_H / 2 + (int)((*y - RADAR_RENDER_H / 2) * scale) + s_radar_pan_y;
 }
 
 /* place a lat/lon at dist_km from home onto the radar; false = outside */
@@ -2356,6 +2378,10 @@ static bool radar_place(double lat, double lon, float dist_km,
     float frac = (s_radar_follow_map || s_aircraft_area_revision != ui_radar_area_revision())
         ? (float)(geo_haversine_km(area_lat, area_lon, lat, lon) / (radius_nm * 1.852))
         : dist_km / (radius_nm * 1.852f);
+    if (frac > 1.0f) {
+        return false;
+    }
+    frac /= (float)s_radar_zoom;
     if (frac > 1.0f) {
         return false;
     }
@@ -2852,7 +2878,7 @@ static void render_radar_panel(void)
             lv_obj_set_pos(s_radar_rings[i], RADAR_CX - r, RADAR_CY - r);
         }
         lv_obj_set_pos(s_radar_home, RADAR_CX - UISX(5), RADAR_CY - UISY(5));
-        lv_label_set_text_fmt(s_radar_range, "%.1f NM per ring", radius_nm / 3.0);
+        lv_label_set_text_fmt(s_radar_range, "%.1f NM per ring", radius_nm * s_radar_zoom / 3.0);
     }
 
     radar_offline_airports(!map_mode, radius_nm);
@@ -5313,12 +5339,7 @@ bool ui_input_action(const char *a)
         return true;
     }
     if (strcmp(a, "zoom_in") == 0 || strcmp(a, "zoom_out") == 0) {
-        double z = s_radar_zoom * (strcmp(a, "zoom_in") == 0 ? 1.0 / 1.5 : 1.5);
-        if (z < 0.18) z = 0.18;
-        if (z > 3.4) z = 3.4;
-        if (z > 0.95 && z < 1.06) z = 1.0;
-        s_radar_zoom = z;
-        radar_tiles_want();
+        radar_zoom_step(strcmp(a, "zoom_in") == 0 ? 1 : -1);
         return true;
     }
     /* Screen control for HTTP (/api/input), MQTT and physical buttons */
