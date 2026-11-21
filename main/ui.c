@@ -869,6 +869,70 @@ static void clock_click_cb(lv_event_t *e)
     amb_show();
 }
 
+static weather_t s_home_weather;
+static lv_obj_t *s_weather_overlay;
+
+void ui_set_weather_forecast(const weather_t *forecast)
+{
+    s_home_weather = *forecast;
+}
+
+static void weather_close_cb(lv_event_t *event)
+{
+    (void)event;
+    lv_obj_del_async(s_weather_overlay);
+    s_weather_overlay = NULL;
+}
+
+static void weather_open_cb(lv_event_t *event)
+{
+    (void)event;
+    if (s_weather_overlay != NULL) {
+        return;
+    }
+    s_weather_overlay = make_panel(lv_layer_top());
+    lv_obj_set_size(s_weather_overlay, SCR_W - UISX(48), SCR_H - UISY(48));
+    lv_obj_center(s_weather_overlay);
+    lv_obj_add_flag(s_weather_overlay, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_t *heading = make_label(s_weather_overlay, UIFONT(&font_pl_20, &font_pl_12), COL_TEXT);
+    lv_obj_align(heading, LV_ALIGN_TOP_LEFT, UISX(12), UISY(8));
+    lv_label_set_text(heading, "Home weather | Next 24 hours");
+    lv_obj_t *close = lv_btn_create(s_weather_overlay);
+    lv_obj_align(close, LV_ALIGN_TOP_RIGHT, -UISX(6), UISY(4));
+    lv_obj_add_event_cb(close, weather_close_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *close_label = lv_label_create(close);
+    lv_label_set_text(close_label, LV_SYMBOL_CLOSE);
+    lv_obj_center(close_label);
+
+    lv_obj_t *scroll = make_panel(s_weather_overlay);
+    lv_obj_set_size(scroll, SCR_W - UISX(72), SCR_H - UISY(112));
+    lv_obj_align(scroll, LV_ALIGN_BOTTOM_MID, 0, -UISY(6));
+    lv_obj_add_flag(scroll, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scroll_dir(scroll, LV_DIR_VER);
+    lv_obj_set_flex_flow(scroll, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_all(scroll, UISX(8), 0);
+    lv_obj_set_style_pad_row(scroll, UISY(8), 0);
+    lv_obj_t *current = make_label(scroll, UIFONT(&font_pl_14, &font_pl_8), COL_ACCENT);
+    lv_label_set_text(current, s_home_weather.valid ? s_weather_txt : "Waiting for weather data");
+    bool fahr = settings_get()->temp_f;
+    for (unsigned i = 0; i < s_home_weather.hour_count; i++) {
+        const weather_hour_t *hour = &s_home_weather.hours[i];
+        float temperature = fahr ? hour->temp_c * 1.8f + 32.0f : hour->temp_c;
+        float wind = fahr ? hour->wind_kmh * 0.621371f : hour->wind_kmh;
+        char precip_text[16];
+        if (hour->precipitation_pct < 0) {
+            snprintf(precip_text, sizeof(precip_text), "—");
+        } else {
+            snprintf(precip_text, sizeof(precip_text), "%d%%", hour->precipitation_pct);
+        }
+        lv_obj_t *row = make_label(scroll, UIFONT(&font_pl_14, &font_pl_8), COL_TEXT);
+        lv_label_set_text_fmt(row, "%.*s  %s    %.0f %s    Wind %.0f %s    Precip %s",
+                              5, hour->local_time + 5, hour->local_time + 11,
+                              (double)temperature, fahr ? "°F" : "°C",
+                              (double)wind, fahr ? "mph" : "km/h", precip_text);
+    }
+}
+
 static void build_header(lv_obj_t *scr)
 {
     lv_obj_t *hdr = make_panel(scr);
@@ -880,6 +944,8 @@ static void build_header(lv_obj_t *scr)
     lv_label_set_long_mode(s_weather_label, LV_LABEL_LONG_DOT);
     lv_label_set_text(s_weather_label, LV_SYMBOL_GPS " esp32flight");
     lv_obj_align(s_weather_label, LV_ALIGN_LEFT_MID, UISX(14), 0);
+    lv_obj_add_flag(s_weather_label, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(s_weather_label, weather_open_cb, LV_EVENT_CLICKED, NULL);
 
     s_clock_label = make_label(hdr, UIFONT(&font_pl_20, &font_pl_12), COL_TEXT);
     /* dead center: offset +60 collided with the status label on busy

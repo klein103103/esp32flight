@@ -12,12 +12,14 @@ esp_err_t weather_fetch(double lat, double lon, weather_t *out)
 {
     out->valid = false;
     out->has_offset = false;
+    out->hour_count = 0;
 
-    char url[224];
+    char url[384];
     snprintf(url, sizeof(url),
              "https://api.open-meteo.com/v1/forecast?latitude=%.4f&longitude=%.4f"
              "&current=temperature_2m,weather_code,wind_speed_10m,wind_direction_10m&wind_speed_unit=kmh"
-             "&timezone=auto",
+             "&hourly=temperature_2m,wind_speed_10m,precipitation_probability"
+             "&forecast_hours=24&timezone=auto",
              lat, lon);
 
     char *buf = malloc(4096);
@@ -51,6 +53,25 @@ esp_err_t weather_fetch(double lat, double lon, weather_t *out)
         out->wind_kmh = cJSON_IsNumber(jw) ? (float)jw->valuedouble : 0;
         out->wind_dir_deg = cJSON_IsNumber(jd) ? (int)jd->valuedouble : -1;
         out->valid = true;
+    }
+    const cJSON *hourly = cJSON_GetObjectItem(root, "hourly");
+    const cJSON *times = cJSON_GetObjectItem(hourly, "time");
+    const cJSON *temps = cJSON_GetObjectItem(hourly, "temperature_2m");
+    const cJSON *winds = cJSON_GetObjectItem(hourly, "wind_speed_10m");
+    const cJSON *precip = cJSON_GetObjectItem(hourly, "precipitation_probability");
+    for (int i = 0; i < WEATHER_FORECAST_HOURS; i++) {
+        const cJSON *time = cJSON_GetArrayItem(times, i);
+        const cJSON *temp = cJSON_GetArrayItem(temps, i);
+        const cJSON *wind = cJSON_GetArrayItem(winds, i);
+        const cJSON *rain = cJSON_GetArrayItem(precip, i);
+        if (!cJSON_IsString(time) || !cJSON_IsNumber(temp) || !cJSON_IsNumber(wind)) {
+            continue;
+        }
+        weather_hour_t *hour = &out->hours[out->hour_count++];
+        snprintf(hour->local_time, sizeof(hour->local_time), "%s", time->valuestring);
+        hour->temp_c = (float)temp->valuedouble;
+        hour->wind_kmh = (float)wind->valuedouble;
+        hour->precipitation_pct = cJSON_IsNumber(rain) ? rain->valueint : -1;
     }
     cJSON_Delete(root);
     if (!out->valid) {

@@ -992,13 +992,15 @@ static void flight_task(void *arg)
                 char wbuf[96];
                 bool fahr = settings_get()->temp_f;
                 float temp = fahr ? wx.temp_c * 9.0f / 5.0f + 32.0f : wx.temp_c;
+                float wind = fahr ? wx.wind_kmh * 0.621371f : wx.wind_kmh;
                 /* wind before the description so truncation trims words, not data */
-                snprintf(wbuf, sizeof(wbuf), "%s %.0f\xC2\xB0%s  \xEF\x9C\xAE %s %.0f  %s",
+                snprintf(wbuf, sizeof(wbuf), "%s %.0f\xC2\xB0%s  \xEF\x9C\xAE %s %.0f %s  %s",
                          weather_icon_str(wx.code), (double)temp, fahr ? "F" : "C",
                          wx.wind_dir_deg >= 0 ? lang_compass(wx.wind_dir_deg) : "",
-                         (double)wx.wind_kmh, lang_weather_desc(wx.code));
+                         (double)wind, fahr ? "mph" : "km/h", lang_weather_desc(wx.code));
                 if (lvgl_port_lock(1000)) {
                     ui_set_weather(wbuf);
+                    ui_set_weather_forecast(&wx);
                     lvgl_port_unlock();
                 }
             }

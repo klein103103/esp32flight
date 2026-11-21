@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include "flight_model.h"
+#include "weather.h"
 
 /* All ui_* functions must be called while holding the LVGL lock
  * (lvgl_port_lock/unlock), except from LVGL's own callbacks. */
@@ -28,6 +29,7 @@ void ui_set_status(const char *text);
 
 /* Weather summary shown in place of the app title. */
 void ui_set_weather(const char *text);
+void ui_set_weather_forecast(const weather_t *forecast);
 
 /* Emergency styling for the status line (red, larger). */
 void ui_set_status_alert(bool alert);

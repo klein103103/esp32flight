@@ -3,6 +3,15 @@
 #include <stdbool.h>
 #include "esp_err.h"
 
+#define WEATHER_FORECAST_HOURS 24
+
+typedef struct {
+    char local_time[17];
+    float temp_c;
+    float wind_kmh;
+    int precipitation_pct;
+} weather_hour_t;
+
 typedef struct {
     float temp_c;
     float wind_kmh;
@@ -11,6 +20,8 @@ typedef struct {
     int   utc_offset_s; /* home UTC offset incl. daylight saving, today */
     bool  has_offset;
     bool  valid;
+    unsigned hour_count;
+    weather_hour_t hours[WEATHER_FORECAST_HOURS];
 } weather_t;
 
 /* Current conditions from the Open-Meteo forecast API (free, no key).

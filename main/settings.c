@@ -48,7 +48,7 @@ void settings_load(void)
     s_settings.input_map[0] = '\0';
     s_settings.map_light = false;
     s_settings.local_adsb_use = true;
-    s_settings.temp_f = false;
+    s_settings.temp_f = true;
     s_settings.retro_map = false;
     s_settings.amb_style = 0;
     s_settings.theme = 0;
