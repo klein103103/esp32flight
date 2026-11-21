@@ -646,7 +646,7 @@ static void flight_task(void *arg)
         return;
     }
 
-    int radius_nm = settings_get()->radius_nm;
+    int radius_nm = ui_radar_radius_nm();
     int consecutive_failures = 0;
     /* First cycle goes straight to the aircraft fetch: the update check,
      * weather and METAR are each a 1-3 s TLS handshake, and running them
@@ -700,12 +700,12 @@ static void flight_task(void *arg)
                 airports_nearest(lat, lon, metar_station);
                 last_weather_ms = -1;   /* refresh weather for the new spot */
             }
-            radius_nm = settings_get()->radius_nm;
             last_weather_ms = -1;
         }
 #endif
         /* Aircraft first: everything else (weather, layers, update check)
          * runs after the fetch + render, so it can never delay positions. */
+        radius_nm = ui_radar_radius_nm();
         esp_err_t err = flight_fetch_nearby(lat, lon, radius_nm, list);
         /* Track mode (one flight anywhere, e.g. family on board): when it
          * is in the air the screen shows only that flight, otherwise the

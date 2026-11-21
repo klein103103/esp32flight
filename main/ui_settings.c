@@ -12,6 +12,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
+#include "airports.h"
 #include "flight_model.h"
 #include "fonts.h"
 #include "geocode.h"
@@ -198,6 +199,18 @@ static void geo_task(void *arg)
     vTaskDelete(NULL);
 }
 
+static void set_home_coordinate_fields(double lat, double lon)
+{
+    char coord[24];
+    snprintf(coord, sizeof(coord), "%.4f", lat);
+    lv_textarea_set_text(s_ta_lat, coord);
+    snprintf(coord, sizeof(coord), "%.4f", lon);
+    lv_textarea_set_text(s_ta_lon, coord);
+    lv_obj_clear_state(s_sw_auto, LV_STATE_CHECKED);
+    lv_obj_clear_state(s_ta_lat, LV_STATE_DISABLED);
+    lv_obj_clear_state(s_ta_lon, LV_STATE_DISABLED);
+}
+
 static void city_search_cb(lv_event_t *e)
 {
     if (s_geo_busy) {
@@ -207,7 +220,16 @@ static void city_search_cb(lv_event_t *e)
     if (q[0] == '\0') {
         return;
     }
+    airport_t airport;
+    if (airports_lookup_any(q, &airport)) {
+        set_home_coordinate_fields(airport.lat, airport.lon);
+        s_geo_count = 0;
+        lv_dropdown_set_options(s_dd_cities, airport.name);
+        lv_dropdown_set_text(s_dd_cities, airport.name);
+        return;
+    }
     s_geo_busy = true;
+    lv_dropdown_set_text(s_dd_cities, NULL);
     lv_dropdown_set_options(s_dd_cities, L()->searching);
     xTaskCreate(geo_task, "geocode", 8192, strdup(q), 3, NULL);
 }
@@ -218,14 +240,7 @@ static void city_pick_cb(lv_event_t *e)
     if (sel < 0 || sel >= s_geo_count) {
         return;
     }
-    char coord[24];
-    snprintf(coord, sizeof(coord), "%.4f", s_geo_results[sel].lat);
-    lv_textarea_set_text(s_ta_lat, coord);
-    snprintf(coord, sizeof(coord), "%.4f", s_geo_results[sel].lon);
-    lv_textarea_set_text(s_ta_lon, coord);
-    lv_obj_clear_state(s_sw_auto, LV_STATE_CHECKED);
-    lv_obj_clear_state(s_ta_lat, LV_STATE_DISABLED);
-    lv_obj_clear_state(s_ta_lon, LV_STATE_DISABLED);
+    set_home_coordinate_fields(s_geo_results[sel].lat, s_geo_results[sel].lon);
 }
 
 /* ---- misc ---- */
@@ -633,7 +648,7 @@ void ui_settings_open(void)
     p = tab_page(tv, L()->tab_place);
     s_sw_auto = add_switch(p, L()->auto_location, 0, 0, !cfg->use_fixed_loc);
     lv_obj_add_event_cb(s_sw_auto, auto_loc_cb, LV_EVENT_VALUE_CHANGED, NULL);
-    add_label(p, L()->city_search, 0, 56);
+    add_label(p, "Search city or airport code", 0, 56);
     s_ta_city = add_textarea(p, 0, 80, 290, "", false);
     add_button(p, 300, 80, 56, 44, LV_SYMBOL_GPS, city_search_cb, COL_PANEL);
     s_dd_cities = add_dropdown(p, 366, 80, 380, city_pick_cb);

@@ -17,6 +17,7 @@
 #include "logos.h"
 #include "flags.h"
 #include "esp_timer.h"
+#include <stdatomic.h>
 #include "runways.h"
 #include "airports.h"
 #include "flight_task.h"
@@ -260,6 +261,13 @@ static bool s_radar_bub_off;   /* tapped away by the user (#9) */
 static lv_obj_t *s_radar_range;
 static lv_obj_t *s_radar_source;
 static bool s_radar_show_rings;
+static atomic_int s_radar_radius_nm = 25;
+static const int s_radar_ranges_nm[] = {5, 10, 25, 50, 100, 250};
+
+int ui_radar_radius_nm(void)
+{
+    return atomic_load_explicit(&s_radar_radius_nm, memory_order_relaxed);
+}
 static const char *s_aircraft_source;
 static int64_t s_aircraft_snapshot_ms;
 static int64_t s_aircraft_failure_ms = -1;
@@ -1527,7 +1535,7 @@ static void radar_tiles_want(void)
     if (!s_home_ok || s_radar_busy) {
         return;
     }
-    int radius_nm = settings_get()->radius_nm;
+    int radius_nm = ui_radar_radius_nm();
     char key[48];
     snprintf(key, sizeof(key), "%.3f,%.3f,%d,%.2f", s_home_lat, s_home_lon,
              radius_nm, s_radar_zoom);
@@ -1616,6 +1624,16 @@ static void radar_home_cb(lv_event_t *event)
     s_radar_zoom = 1.0;
     render_radar_panel();
     render_list_rows();
+}
+
+static void radar_range_cb(lv_event_t *event)
+{
+    unsigned selected = lv_dropdown_get_selected(lv_event_get_target(event));
+    if (selected < sizeof(s_radar_ranges_nm) / sizeof(s_radar_ranges_nm[0])) {
+        atomic_store_explicit(&s_radar_radius_nm, s_radar_ranges_nm[selected], memory_order_relaxed);
+        render_radar_panel();
+        render_list_rows();
+    }
 }
 
 static void radar_rings_cb(lv_event_t *event)
@@ -1734,6 +1752,13 @@ static void build_radar_panel(lv_obj_t *scr)
     lv_obj_t *rings_text = make_label(rings_btn, UIFONT(&font_pl_14, &font_pl_8), COL_TEXT);
     lv_label_set_text(rings_text, "Rings");
     lv_obj_center(rings_text);
+
+    lv_obj_t *range = lv_dropdown_create(s_radar_panel);
+    lv_dropdown_set_options(range, "5 NM\n10 NM\n25 NM\n50 NM\n100 NM\n250 NM");
+    lv_dropdown_set_selected(range, 2);
+    lv_obj_set_width(range, UISX(100));
+    lv_obj_align(range, LV_ALIGN_TOP_RIGHT, -UISX(154), UISY(8));
+    lv_obj_add_event_cb(range, radar_range_cb, LV_EVENT_VALUE_CHANGED, NULL);
 }
 
 /* ---------- optional extra objects: ISS, radiosondes, AIS ships ---------- */
@@ -2222,7 +2247,7 @@ static void render_radar_panel(void)
 {
     radar_tiles_want();
 
-    int radius_nm = settings_get()->radius_nm;
+    int radius_nm = ui_radar_radius_nm();
     bool map_mode = s_radar_view_ok;
     int hx = RADAR_CX, hy = RADAR_CY;
     int rpx = RADAR_R;
@@ -4427,8 +4452,7 @@ static bool radar_view_filter(double lat, double lon, float dist_km)
         return true;
     }
     int x, y;
-    return radar_place(lat, lon, dist_km, true,
-                       settings_get()->radius_nm, &x, &y);
+    return radar_place(lat, lon, dist_km, true, ui_radar_radius_nm(), &x, &y);
 }
 
 static void render_list_rows(void)

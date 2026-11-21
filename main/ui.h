@@ -44,6 +44,9 @@ const char *ui_update_tag(void);
 /* Home coordinates (after geolocation) - used by the radar map view. */
 void ui_set_home(double lat, double lon);
 
+/* Session tracking radius. Safe to read from the aircraft fetch task. */
+int ui_radar_radius_nm(void);
+
 /* Replace displayed flight data. Routes are looked up via routes_get_cached
  * and snapshotted, so later touch interactions don't race the network task. */
 void ui_update(const aircraft_list_t *list);
