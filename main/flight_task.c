@@ -835,6 +835,8 @@ static void flight_task(void *arg)
         ui_radar_follow_center(&query_lat, &query_lon);
         radius_nm = ui_radar_query_radius_nm();
         lvgl_port_unlock();
+        ESP_LOGD(TAG, "aircraft search %.4f, %.4f within %d NM (area %u)",
+                 query_lat, query_lon, radius_nm, area_revision);
         esp_err_t err = flight_fetch_nearby(query_lat, query_lon, radius_nm, list);
         if (area_revision != ui_radar_area_revision()) {
             continue;
@@ -949,7 +951,8 @@ static void flight_task(void *arg)
             }
 
             int lookups = 0;
-            for (int i = 0; i < top && lookups < MAX_ROUTE_LOOKUPS_PER_CYCLE; i++) {
+            for (int i = 0; i < top && lookups < MAX_ROUTE_LOOKUPS_PER_CYCLE &&
+                            area_revision == ui_radar_area_revision(); i++) {
                 const char *cs = list->ac[i].callsign;
                 if (cs[0] != '\0' && routes_get_cached(cs) == NULL) {
                     routes_fetch(cs, list->ac[i].lat, list->ac[i].lon, list->ac[i].has_pos,
@@ -1104,6 +1107,8 @@ static void flight_task(void *arg)
                 set_status(L()->no_data);
             }
         }
+
+        if (area_revision != ui_radar_area_revision()) continue;
 
         /* Housekeeping after the aircraft are on screen (still gated by
          * primed so a dead link does not starve the first fetch retries). */

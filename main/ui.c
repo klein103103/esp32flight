@@ -312,7 +312,7 @@ bool ui_radar_show_ground(void)
 }
 static atomic_uint s_radar_area_revision;
 static unsigned s_aircraft_area_revision;
-static bool s_radar_follow_map;
+static bool s_radar_follow_map = true;
 static atomic_int s_radar_query_radius_nm = 25;
 static double s_radar_query_lat, s_radar_query_lon;
 static lv_timer_t *s_radar_search_timer;
@@ -1737,6 +1737,7 @@ static void radar_search_timer_cb(lv_timer_t *timer)
         return;
     }
     radar_commit_search();
+    label_set_if_changed(s_radar_source, "Loading aircraft for this area…");
     render_radar_panel();
 }
 
@@ -2294,6 +2295,7 @@ static void build_radar_panel(lv_obj_t *scr)
     lv_obj_set_size(follow, UISX(96), UISY(32));
     lv_obj_align(follow, LV_ALIGN_TOP_RIGHT, -UISX(154), UISY(8));
     lv_obj_add_flag(follow, LV_OBJ_FLAG_CHECKABLE);
+    if (s_radar_follow_map) lv_obj_add_state(follow, LV_STATE_CHECKED);
     lv_obj_add_event_cb(follow, radar_follow_cb, LV_EVENT_VALUE_CHANGED, NULL);
     lv_obj_t *follow_text = make_label(follow, UIFONT(&font_pl_14, &font_pl_8), COL_TEXT);
     lv_label_set_text(follow_text, "Follow Map");
