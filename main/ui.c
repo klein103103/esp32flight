@@ -4559,6 +4559,7 @@ static void build_detail(lv_obj_t *scr)
 
 void ui_init(void)
 {
+    ui_photo_init();
     s_shown = heap_caps_calloc(MAX_SHOWN, sizeof(*s_shown), MALLOC_CAP_SPIRAM);
     assert(s_shown != NULL);
     /* ship bookkeeping is bulky; keep it out of internal RAM */

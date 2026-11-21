@@ -1,5 +1,6 @@
 #include "ui_photo.h"
 
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -42,7 +43,13 @@ static char s_photo_model[5];
 static bool s_photo_exact;
 static char s_photo_credit[128];
 static lv_img_dsc_t s_photo_dsc;
-static bool s_busy;
+static atomic_bool s_busy;
+static TaskHandle_t s_photo_worker;
+static StaticTask_t s_photo_task_state;
+/* Reserve contiguous internal RAM before networking and map allocations
+ * fragment the heap. Flash and TLS calls use this internal stack. */
+#define PHOTO_STACK_BYTES 8192
+static StackType_t s_photo_stack[PHOTO_STACK_BYTES / sizeof(StackType_t)];
 
 static void close_cb(lv_event_t *e)
 {
@@ -60,6 +67,8 @@ typedef struct {
     bool photo_cached;
     bool model_visible;
 } photo_req_t;
+
+static photo_req_t s_photo_request;
 
 static const char *TAG = "photo";
 
@@ -329,9 +338,9 @@ static void save_photo(const char *image, const char *attribution, const char *c
 }
 #endif
 
-static void photo_task(void *arg)
+static void process_photo_request(const photo_req_t *req)
 {
-    photo_req_t *req = arg;
+    ESP_LOGI(TAG, "%s (%s): lookup started", req->aircraft.callsign, req->hex);
     char credit[128] = "";
     uint16_t *pixels = NULL;
     int w = 0, h = 0;
@@ -445,16 +454,34 @@ static void photo_task(void *arg)
         lvgl_port_unlock();
     }
     free(json);
-    free(req);
-    s_busy = false;
-    vTaskDelete(NULL);
+    ESP_LOGI(TAG, "%s (%s): lookup finished (exact=%d, model=%d)",
+             req->aircraft.callsign, req->hex, exact, model_visible);
+}
+
+static void photo_task(void *arg)
+{
+    (void)arg;
+    for (;;) {
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        process_photo_request(&s_photo_request);
+        atomic_store(&s_busy, false);
+    }
+}
+
+void ui_photo_init(void)
+{
+    if (s_photo_worker == NULL) {
+        s_photo_worker = xTaskCreateStatic(photo_task, "photo", sizeof(s_photo_stack),
+                                           NULL, 3, s_photo_stack, &s_photo_task_state);
+        if (s_photo_worker == NULL) ESP_LOGE(TAG, "Photo worker could not start");
+    }
 }
 
 static void open_photo_panel(const char *hex, const char *callsign, const char *live_details,
                              const aircraft_t *aircraft)
 {
     bool show_details = live_details != NULL;
-    if (s_overlay != NULL || s_busy) {
+    if (s_overlay != NULL || atomic_load(&s_busy)) {
         return;
     }
 
@@ -533,7 +560,10 @@ static void open_photo_panel(const char *hex, const char *callsign, const char *
         lv_obj_set_style_text_color(s_aircraft_details, COL_TEXT, 0);
         lv_obj_set_style_text_line_space(s_aircraft_details, UISY(5), 0);
         lv_obj_set_width(s_aircraft_details, lv_pct(100));
-        lv_label_set_text(s_aircraft_details, "Looking up route and aircraft details…");
+        const char *type = aircraft->type_desc[0] ? aircraft->type_desc : aircraft->type_icao;
+        lv_label_set_text_fmt(s_aircraft_details,
+                              "Registration: %s\nAircraft: %s\nLooking up departure and destination…",
+                              aircraft->reg[0] ? aircraft->reg : "—", type[0] ? type : "—");
 
         s_photo_view = lv_obj_create(s_overlay);
         lv_obj_set_size(s_photo_view, photo_width, body_height - UISY(58));
@@ -578,24 +608,24 @@ static void open_photo_panel(const char *hex, const char *callsign, const char *
         display_cached_photo();
         if (photo_cached && !show_details) return;
     }
-    photo_req_t *req = malloc(sizeof(photo_req_t));
-    if (req != NULL) {
-        strlcpy(req->hex, hex, sizeof(req->hex));
-        if (aircraft != NULL) req->aircraft = *aircraft;
-        req->show_details = show_details;
-        req->photo_cached = photo_cached;
-        req->model_visible = model_visible;
-        s_busy = true;
-        if (xTaskCreate(photo_task, "photo", 8192, req, 3, NULL) == pdPASS) {
-            return;
-        }
-        s_busy = false;
-        free(req);
+    if (s_photo_worker != NULL) {
+        strlcpy(s_photo_request.hex, hex, sizeof(s_photo_request.hex));
+        s_photo_request.aircraft = *aircraft;
+        s_photo_request.show_details = show_details;
+        s_photo_request.photo_cached = photo_cached;
+        s_photo_request.model_visible = model_visible;
+        atomic_store(&s_busy, true);
+        xTaskNotifyGive(s_photo_worker);
+        return;
     }
+    ESP_LOGE(TAG, "%s (%s): lookup worker is unavailable", callsign, hex);
     if (s_aircraft_details != NULL) {
-        lv_label_set_text(s_aircraft_details, "Aircraft and route details unavailable");
+        lv_label_set_text_fmt(s_aircraft_details,
+                              "Registration: %s\nAircraft: %s\nRoute lookup could not start",
+                              aircraft->reg[0] ? aircraft->reg : "—",
+                              aircraft->type_desc[0] ? aircraft->type_desc : aircraft->type_icao);
     }
-    if (!photo_cached && !model_visible) lv_label_set_text(s_msg, L()->no_photo);
+    if (!photo_cached && !model_visible) lv_label_set_text(s_msg, "Photo lookup could not start");
 }
 
 void ui_photo_open(const aircraft_t *aircraft)
