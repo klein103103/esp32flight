@@ -12,6 +12,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "lwip/sockets.h"
+#include "lwip/inet.h"
 #include "settings.h"
 
 static esp_netif_t *s_ap;
@@ -89,6 +90,13 @@ static esp_err_t submit(httpd_req_t *req)
     if (!is_setup_client(req)) {
         return httpd_resp_send_err(req, HTTPD_404_NOT_FOUND, "Setup is available on the radar Wi-Fi only.");
     }
+    char origin[64];
+    size_t origin_len = httpd_req_get_hdr_value_len(req, "Origin");
+    if (origin_len > 0 && (origin_len >= sizeof(origin) ||
+        httpd_req_get_hdr_value_str(req, "Origin", origin, sizeof(origin)) != ESP_OK ||
+        strcmp(origin, "http://" WIFI_SETUP_IP ":8081") != 0)) {
+        return httpd_resp_send_err(req, HTTPD_403_FORBIDDEN, "Open the setup form on the radar network.");
+    }
     char body[330];
     if (req->content_len <= 0 || req->content_len >= sizeof(body)) {
         return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid form.");
@@ -148,10 +156,24 @@ esp_err_t wifi_setup_start(char *password, size_t capacity)
         strlcpy(password, s_password, capacity);
         return ESP_OK;
     }
-    if (s_ap == NULL) s_ap = esp_netif_create_default_wifi_ap();
     if (s_ap == NULL) {
-        atomic_store(&s_active, false);
-        return ESP_FAIL;
+        s_ap = esp_netif_create_default_wifi_ap();
+        if (s_ap == NULL) {
+            atomic_store(&s_active, false);
+            return ESP_FAIL;
+        }
+        esp_netif_ip_info_t address = {0};
+        address.ip.addr = inet_addr(WIFI_SETUP_IP);
+        address.gw.addr = address.ip.addr;
+        address.netmask.addr = inet_addr("255.255.255.0");
+        esp_netif_dhcps_stop(s_ap);
+        esp_err_t ip_error = esp_netif_set_ip_info(s_ap, &address);
+        if (ip_error != ESP_OK) {
+            esp_netif_destroy_default_wifi(s_ap);
+            s_ap = NULL;
+            atomic_store(&s_active, false);
+            return ip_error;
+        }
     }
     snprintf(s_password, sizeof(s_password), "%08lx%04lx",
              (unsigned long)esp_random(), (unsigned long)(esp_random() & 0xffff));

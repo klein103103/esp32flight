@@ -81,8 +81,10 @@ esp_err_t wifi_mgr_start(void)
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     if (st->wifi_ssid[0] != '\0') {
         wifi_config_t wifi_config = { 0 };
-        strlcpy((char *)wifi_config.sta.ssid, st->wifi_ssid, sizeof(wifi_config.sta.ssid));
-        strlcpy((char *)wifi_config.sta.password, st->wifi_pass, sizeof(wifi_config.sta.password));
+        memcpy(wifi_config.sta.ssid, st->wifi_ssid,
+               strnlen(st->wifi_ssid, sizeof(wifi_config.sta.ssid)));
+        memcpy(wifi_config.sta.password, st->wifi_pass,
+               strnlen(st->wifi_pass, sizeof(wifi_config.sta.password)));
         wifi_config.sta.threshold.authmode = st->wifi_pass[0] ? WIFI_AUTH_WPA2_PSK : WIFI_AUTH_OPEN;
         ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
         ESP_LOGI(TAG, "connecting to \"%s\"", st->wifi_ssid);

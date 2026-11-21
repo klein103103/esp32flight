@@ -309,7 +309,7 @@ static void phone_setup_cb(lv_event_t *event)
     }
     char instructions[180];
     snprintf(instructions, sizeof(instructions),
-             "Join Radar-Setup on your phone.\nPassword: %s\nOpen http://192.168.4.1:8081/\nThe setup network closes in 5 minutes.", password);
+             "Join Radar-Setup on your phone.\nPassword: %s\nOpen http://" WIFI_SETUP_IP ":8081/\nThe setup network closes in 5 minutes.", password);
     lv_obj_t *box = lv_msgbox_create(NULL, "Phone Wi-Fi setup", instructions, NULL, true);
     lv_obj_center(box);
 }
