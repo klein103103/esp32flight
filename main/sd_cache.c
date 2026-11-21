@@ -17,6 +17,11 @@
 #endif
 
 static atomic_bool s_ready;
+static atomic_uint s_photo_hits, s_photo_saves;
+
+unsigned sd_photo_cache_hits(void) { return atomic_load(&s_photo_hits); }
+unsigned sd_photo_cache_saves(void) { return atomic_load(&s_photo_saves); }
+void sd_photo_cache_record_hit(void) { atomic_fetch_add(&s_photo_hits, 1); }
 static esp_err_t s_mount_result = ESP_ERR_INVALID_STATE;
 
 const char *sd_cache_status(void)
@@ -96,7 +101,12 @@ bool sd_cache_write_photo(const char *path, const void *buffer, size_t size)
     if (!sd_cache_ready() || esp_vfs_fat_info("/sd", &total, &free_bytes) != ESP_OK ||
         free_bytes < UINT64_C(512) * 1024 * 1024 + size) return false;
     mkdir("/sd/radar/cachep", 0775);
-    return write_cache_file(path, buffer, size);
+    bool saved = write_cache_file(path, buffer, size);
+    size_t length = strlen(path);
+    if (saved && length >= 4 && strcmp(path + length - 4, ".jpg") == 0) {
+        atomic_fetch_add(&s_photo_saves, 1);
+    }
+    return saved;
 }
 
 bool sd_cache_write_tile(const char *directory, const char *path,

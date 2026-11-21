@@ -235,6 +235,7 @@ static void photo_task(void *arg)
             if (credit_size > 0) {
                 size = sd_cache_read(cached_image, raw, PHOTO_MAX_BYTES);
                 if (size > 4) pixels = jpeg_decode_rgb565(raw, size, 700, 380, &w, &h);
+                if (pixels != NULL) sd_photo_cache_record_hit();
             }
         }
     }

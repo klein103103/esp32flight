@@ -2080,9 +2080,11 @@ static void radar_more_cb(lv_event_t *event)
         if (strcmp(s_selected_hex, s_all[i].hex) == 0) {
             const amb_target_t *target = &s_all[i];
             char live_details[112], altitude[20], speed[20];
-            snprintf(live_details, sizeof(live_details), "%s  |  %s  |  %.1f NM",
+            char track[16] = "—";
+            if (target->track >= 0) snprintf(track, sizeof(track), "%.0f°", (double)target->track);
+            snprintf(live_details, sizeof(live_details), "%s  |  %s  |  %.1f NM  |  Track %s",
                      target->ground ? L()->ground : units_alt(target->alt_ft, altitude, sizeof(altitude)),
-                     units_speed(target->speed_kts, speed, sizeof(speed)), (double)target->dist_nm);
+                     units_speed(target->speed_kts, speed, sizeof(speed)), (double)target->dist_nm, track);
             aircraft_t snapshot = { .lat = target->lat, .lon = target->lon, .has_pos = true,
                                     .gs_kts = target->speed_kts, .track_deg = target->track };
             strlcpy(snapshot.hex, target->hex, sizeof(snapshot.hex));
