@@ -32,12 +32,13 @@
 
 static lv_obj_t *s_overlay;
 static lv_obj_t *s_img;
+static lv_obj_t *s_photo_view;
 static lv_obj_t *s_msg;
 static lv_obj_t *s_credit;
 static lv_obj_t *s_aircraft_details;
 static uint8_t *s_photo_buf;
 static char s_photo_hex[8];
-static char s_photo_credit[96];
+static char s_photo_credit[128];
 static lv_img_dsc_t s_photo_dsc;
 static bool s_busy;
 
@@ -135,6 +136,72 @@ static uint16_t *fetch_decode(const char *url, uint8_t *raw, int *w, int *h, siz
     return px;
 }
 
+static const char *commons_metadata(const cJSON *metadata, const char *key)
+{
+    const cJSON *value = cJSON_GetObjectItem(cJSON_GetObjectItem(metadata, key), "value");
+    return cJSON_IsString(value) ? value->valuestring : "";
+}
+
+static uint16_t *fetch_representative_photo(const aircraft_t *aircraft, char *json,
+                                            uint8_t *raw, int *w, int *h, size_t *bytes,
+                                            char *credit, size_t credit_size)
+{
+    const char *type = aircraft->type_icao;
+    size_t len = strlen(type);
+    if (len < 2 || len > 4 || strspn(type, "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789") != len) {
+        return NULL;
+    }
+
+    char api[512];
+    snprintf(api, sizeof(api),
+             "https://commons.wikimedia.org/w/api.php?action=query&format=json&formatversion=2"
+             "&generator=search&gsrnamespace=6&gsrlimit=2&gsrsearch=filetype%%3Abitmap%%20%%22%s%%22%%20aircraft"
+             "&prop=imageinfo&iiprop=url%%7Cthumbmime%%7Cextmetadata&iiurlwidth=500"
+             "&iiextmetadatafilter=Artist%%7CLicenseShortName", type);
+    if (http_get_to_buffer_t(api, json, 8192, NULL, 3500) != ESP_OK) return NULL;
+
+    cJSON *root = cJSON_Parse(json);
+    const cJSON *pages = cJSON_GetObjectItem(cJSON_GetObjectItem(root, "query"), "pages");
+    const cJSON *page;
+    uint16_t *pixels = NULL;
+    cJSON_ArrayForEach(page, pages) {
+        const cJSON *info = cJSON_GetArrayItem(cJSON_GetObjectItem(page, "imageinfo"), 0);
+        const cJSON *thumb = cJSON_GetObjectItem(info, "thumburl");
+        const cJSON *mime = cJSON_GetObjectItem(info, "thumbmime");
+        const cJSON *metadata = cJSON_GetObjectItem(info, "extmetadata");
+        const char *license = commons_metadata(metadata, "LicenseShortName");
+        const char *artist = commons_metadata(metadata, "Artist");
+        if (!cJSON_IsString(thumb) || !cJSON_IsString(mime) ||
+            strcmp(mime->valuestring, "image/jpeg") != 0 ||
+            strncmp(thumb->valuestring, "https://upload.wikimedia.org/", 29) != 0 ||
+            (strncmp(license, "CC BY", 5) != 0 && strcmp(license, "CC0") != 0 &&
+             strcmp(license, "Public domain") != 0)) {
+            continue;
+        }
+
+        char author[49];
+        size_t used = 0;
+        bool in_tag = false;
+        for (const char *p = artist; *p && used < sizeof(author) - 1; p++) {
+            if (*p == '<') in_tag = true;
+            else if (*p == '>') in_tag = false;
+            else if (!in_tag && (unsigned char)*p >= 32 && (unsigned char)*p < 127) {
+                author[used++] = *p;
+            }
+        }
+        author[used] = '\0';
+        if (author[0] == '\0' && strncmp(license, "CC BY", 5) == 0) continue;
+        pixels = fetch_decode(thumb->valuestring, raw, w, h, bytes);
+        if (pixels != NULL) {
+            snprintf(credit, credit_size, "Representative %s • Wikimedia Commons\n%.48s%s%.16s",
+                     type, author, author[0] ? " / " : "", license);
+            break;
+        }
+    }
+    cJSON_Delete(root);
+    return pixels;
+}
+
 static void show_route_details(const photo_req_t *req, char *buffer, size_t size)
 {
     route_info_t route;
@@ -189,13 +256,15 @@ static void display_cached_photo(void)
 {
     lv_img_set_src(s_img, &s_photo_dsc);
     unsigned zoom = s_photo_dsc.header.w <= 390 && s_photo_dsc.header.h <= 200 ? 512 : 256;
-    if (s_aircraft_details != NULL) {
-        unsigned fit_width = (unsigned)(LV_HOR_RES - UISX(32)) * 256U / s_photo_dsc.header.w;
-        unsigned fit_height = (unsigned)(LV_VER_RES - UISY(205)) * 256U / s_photo_dsc.header.h;
+    if (s_photo_view != NULL) {
+        lv_obj_update_layout(s_photo_view);
+        unsigned fit_width = (unsigned)lv_obj_get_content_width(s_photo_view) * 256U / s_photo_dsc.header.w;
+        unsigned fit_height = (unsigned)lv_obj_get_content_height(s_photo_view) * 256U / s_photo_dsc.header.h;
         if (zoom > fit_width) zoom = fit_width;
         if (zoom > fit_height) zoom = fit_height;
     }
     lv_img_set_zoom(s_img, zoom);
+    lv_obj_center(s_img);
     lv_obj_clear_flag(s_img, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(s_msg, LV_OBJ_FLAG_HIDDEN);
     lv_label_set_text(s_credit, s_photo_credit);
@@ -204,7 +273,7 @@ static void display_cached_photo(void)
 static void photo_task(void *arg)
 {
     photo_req_t *req = arg;
-    char credit[96] = "";
+    char credit[128] = "";
     uint16_t *pixels = NULL;
     int w = 0, h = 0;
     size_t downloaded_bytes = 0;
@@ -257,6 +326,14 @@ static void photo_task(void *arg)
             if (pixels != NULL) {
                 strlcpy(credit, "photo: airport-data.com", sizeof(credit));
             }
+        }
+        if (pixels == NULL && req->show_details) {
+            if (lvgl_port_lock(-1)) {
+                if (s_overlay != NULL) lv_label_set_text(s_msg, "Looking for a representative photo…");
+                lvgl_port_unlock();
+            }
+            pixels = fetch_representative_photo(&req->aircraft, json, raw, &w, &h,
+                                                &downloaded_bytes, credit, sizeof(credit));
         }
     }
     if (pixels == NULL && !req->photo_cached) {
@@ -322,12 +399,15 @@ static void open_photo_panel(const char *hex, const char *callsign, const char *
     lv_obj_set_style_border_width(s_overlay, 0, 0);
     lv_obj_set_style_radius(s_overlay, 0, 0);
     lv_obj_clear_flag(s_overlay, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_style_pad_all(s_overlay, 0, 0);
 
     lv_obj_t *title = lv_label_create(s_overlay);
     lv_obj_set_style_text_font(title, UIFONT(&lv_font_montserrat_24, &lv_font_montserrat_14), 0);
     lv_obj_set_style_text_color(title, COL_TEXT, 0);
     lv_label_set_text_fmt(title, "%s  -  %s", callsign, hex);
-    lv_obj_set_pos(title, UISX(16), UISY(12));
+    lv_obj_set_width(title, LV_HOR_RES - UISX(96));
+    lv_label_set_long_mode(title, LV_LABEL_LONG_DOT);
+    lv_obj_align(title, LV_ALIGN_TOP_LEFT, UISX(16), UISY(16));
 
     lv_obj_t *btn_close = lv_btn_create(s_overlay);
     lv_obj_set_size(btn_close, UISX(52), UISY(40));
@@ -342,36 +422,86 @@ static void open_photo_panel(const char *hex, const char *callsign, const char *
     lv_obj_center(xl);
 
     s_aircraft_details = NULL;
+    s_photo_view = NULL;
+    lv_obj_t *photo_parent = s_overlay;
     if (show_details) {
-        lv_obj_t *live = lv_label_create(s_overlay);
+        const int margin = UISX(12);
+        const int body_top = UISY(62);
+        const int body_height = LV_VER_RES - body_top - UISY(12);
+        const int details_width = LV_HOR_RES * 37 / 100;
+        const int photo_width = LV_HOR_RES - details_width - 3 * margin;
+
+        lv_obj_t *details = lv_obj_create(s_overlay);
+        lv_obj_set_size(details, details_width, body_height);
+        lv_obj_set_pos(details, margin, body_top);
+        lv_obj_set_style_bg_color(details, COL_PANEL, 0);
+        lv_obj_set_style_border_width(details, 0, 0);
+        lv_obj_set_style_pad_all(details, UISX(12), 0);
+        lv_obj_set_style_pad_row(details, UISY(12), 0);
+        lv_obj_set_scroll_dir(details, LV_DIR_VER);
+        lv_obj_set_flex_flow(details, LV_FLEX_FLOW_COLUMN);
+
+        lv_obj_t *heading = lv_label_create(details);
+        lv_obj_set_style_text_font(heading, UIFONT(&font_pl_20, &font_pl_12), 0);
+        lv_obj_set_style_text_color(heading, COL_ACCENT, 0);
+        lv_label_set_text(heading, "Live flight");
+
+        lv_obj_t *live = lv_label_create(details);
         lv_obj_set_style_text_font(live, UIFONT(&font_pl_14, &font_pl_8), 0);
         lv_obj_set_style_text_color(live, COL_TEXT, 0);
-        lv_obj_set_pos(live, UISX(16), UISY(48));
-        lv_label_set_text_fmt(live, "%s\nSquawk %s  |  Vertical rate %+d ft/min",
+        lv_obj_set_style_text_line_space(live, UISY(5), 0);
+        lv_obj_set_width(live, lv_pct(100));
+        lv_label_set_text_fmt(live, "%s\nSquawk %s\nVertical rate %+d ft/min",
                               live_details, aircraft->squawk[0] ? aircraft->squawk : "—",
                               aircraft->baro_rate_fpm);
-        s_aircraft_details = lv_label_create(s_overlay);
+
+        heading = lv_label_create(details);
+        lv_obj_set_style_text_font(heading, UIFONT(&font_pl_20, &font_pl_12), 0);
+        lv_obj_set_style_text_color(heading, COL_ACCENT, 0);
+        lv_obj_set_width(heading, lv_pct(100));
+        lv_label_set_text(heading, "Route and aircraft");
+
+        s_aircraft_details = lv_label_create(details);
         lv_obj_set_style_text_font(s_aircraft_details, UIFONT(&font_pl_14, &font_pl_8), 0);
         lv_obj_set_style_text_color(s_aircraft_details, COL_TEXT, 0);
-        lv_obj_set_width(s_aircraft_details, LV_HOR_RES - UISX(40));
-        lv_obj_set_pos(s_aircraft_details, UISX(16), UISY(94));
+        lv_obj_set_style_text_line_space(s_aircraft_details, UISY(5), 0);
+        lv_obj_set_width(s_aircraft_details, lv_pct(100));
         lv_label_set_text(s_aircraft_details, "Looking up route and aircraft details…");
+
+        s_photo_view = lv_obj_create(s_overlay);
+        lv_obj_set_size(s_photo_view, photo_width, body_height - UISY(58));
+        lv_obj_set_pos(s_photo_view, details_width + 2 * margin, body_top);
+        lv_obj_set_style_bg_color(s_photo_view, COL_PANEL, 0);
+        lv_obj_set_style_border_width(s_photo_view, 0, 0);
+        lv_obj_set_style_pad_all(s_photo_view, 0, 0);
+        lv_obj_clear_flag(s_photo_view, LV_OBJ_FLAG_SCROLLABLE);
+        photo_parent = s_photo_view;
     }
-    s_msg = lv_label_create(s_overlay);
+    s_msg = lv_label_create(photo_parent);
     lv_obj_set_style_text_font(s_msg, UIFONT(&font_pl_20, &font_pl_12), 0);
     lv_obj_set_style_text_color(s_msg, COL_DIM, 0);
+    lv_obj_set_style_text_align(s_msg, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_width(s_msg, lv_pct(90));
     lv_label_set_text(s_msg, L()->loading_photo);
     lv_obj_center(s_msg);
 
-    s_img = lv_img_create(s_overlay);
-    lv_obj_align(s_img, LV_ALIGN_CENTER, 0, show_details ? UISY(76) : 0);
+    s_img = lv_img_create(photo_parent);
+    lv_obj_center(s_img);
     lv_obj_add_flag(s_img, LV_OBJ_FLAG_HIDDEN);
 
     s_credit = lv_label_create(s_overlay);
     lv_obj_set_style_text_font(s_credit, UIFONT(&font_pl_14, &font_pl_8), 0);
     lv_obj_set_style_text_color(s_credit, COL_DIM, 0);
     lv_label_set_text(s_credit, "");
-    lv_obj_align(s_credit, LV_ALIGN_BOTTOM_LEFT, UISX(16), -UISY(8));
+    if (show_details) {
+        const int margin = UISX(12);
+        const int details_width = LV_HOR_RES * 37 / 100;
+        lv_obj_set_width(s_credit, LV_HOR_RES - details_width - 3 * margin);
+        lv_obj_set_style_text_align(s_credit, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_set_pos(s_credit, details_width + 2 * margin, LV_VER_RES - UISY(62));
+    } else {
+        lv_obj_align(s_credit, LV_ALIGN_BOTTOM_LEFT, UISX(16), -UISY(8));
+    }
 
     bool photo_cached = s_photo_buf != NULL && strcmp(s_photo_hex, hex) == 0;
     if (photo_cached) {
