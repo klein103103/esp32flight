@@ -738,8 +738,84 @@ static void list_mode_cb(lv_event_t *e)
     render_right();
 }
 
+static aircraft_t s_row_pressed_aircraft;
+static intptr_t s_row_pressed_index = -1;
+static uint32_t s_row_pressed_at;
+static bool s_row_hold_fired;
+
+static void list_aircraft_summary(const aircraft_t *aircraft, char *out, size_t size)
+{
+    char altitude[20], speed[20], track[16];
+    if (aircraft->track_deg < 0) {
+        strlcpy(track, "—", sizeof(track));
+    } else {
+        snprintf(track, sizeof(track), "%.0f°", (double)aircraft->track_deg);
+    }
+    snprintf(out, size, "%s  |  %s\nTrack %s  |  %.1f NM",
+             aircraft->on_ground ? L()->ground : units_alt(aircraft->alt_baro_ft, altitude, sizeof(altitude)),
+             units_speed(aircraft->gs_kts, speed, sizeof(speed)),
+             track, (double)aircraft->dist_nm);
+}
+
+static void list_aircraft_more(const aircraft_t *aircraft)
+{
+    char summary[112];
+    list_aircraft_summary(aircraft, summary, sizeof(summary));
+    ui_aircraft_more_open(aircraft->hex, aircraft->callsign, summary);
+}
+
+static aircraft_t s_list_card_aircraft;
+
+static void list_card_button_cb(lv_event_t *event)
+{
+    lv_obj_t *box = lv_event_get_current_target(event);
+    unsigned button = lv_msgbox_get_active_btn(box);
+    lv_msgbox_close(box);
+    if (button == 0) list_aircraft_more(&s_list_card_aircraft);
+}
+
+static void list_aircraft_card(const aircraft_t *aircraft)
+{
+    static const char *buttons[] = { "More", "Close", "" };
+    char summary[112];
+    list_aircraft_summary(aircraft, summary, sizeof(summary));
+    s_list_card_aircraft = *aircraft;
+    lv_obj_t *box = lv_msgbox_create(NULL, aircraft->callsign[0] ? aircraft->callsign : aircraft->hex,
+                                    summary, buttons, false);
+    lv_obj_set_width(box, UISX(300));
+    lv_obj_center(box);
+    lv_obj_add_event_cb(box, list_card_button_cb, LV_EVENT_VALUE_CHANGED, NULL);
+}
+
+static void row_hold_cb(lv_event_t *event)
+{
+    const intptr_t row = (intptr_t)lv_event_get_user_data(event);
+    const lv_event_code_t code = lv_event_get_code(event);
+    if (code == LV_EVENT_PRESSED) {
+        s_row_hold_fired = false;
+        s_row_pressed_index = -1;
+        if (row >= 0 && row < s_list_plane_rows) {
+            int index = s_row_plane_idx[row];
+            if (index >= 0 && index < s_shown_count) {
+                s_row_pressed_aircraft = s_shown[index].ac;
+                s_row_pressed_index = row;
+                s_row_pressed_at = lv_tick_get();
+            }
+        }
+    } else if (code == LV_EVENT_PRESS_LOST) {
+        s_row_pressed_index = -1;
+    } else if (code == LV_EVENT_PRESSING && row == s_row_pressed_index &&
+               !s_row_hold_fired && lv_tick_elaps(s_row_pressed_at) >= 2000U) {
+        lv_indev_t *input = lv_indev_get_act();
+        if (input == NULL || lv_indev_get_scroll_obj(input) != NULL) return;
+        s_row_hold_fired = true;
+        list_aircraft_more(&s_row_pressed_aircraft);
+    }
+}
+
 static void row_click_cb(lv_event_t *e)
 {
+    if (s_row_hold_fired) return;
     intptr_t idx = (intptr_t)lv_event_get_user_data(e);
     if (idx >= s_list_plane_rows) {
         int si = (int)(idx - s_list_plane_rows);
@@ -755,13 +831,23 @@ static void row_click_cb(lv_event_t *e)
     }
     s_sel_ship_mmsi = 0;
     if (idx >= 0 && idx < s_list_plane_rows) {
-        s_selected = s_row_plane_idx[idx];
-        strlcpy(s_selected_hex, s_shown[s_selected].ac.hex, sizeof(s_selected_hex));
+        const aircraft_t *aircraft = idx == s_row_pressed_index ? &s_row_pressed_aircraft :
+                                     &s_shown[s_row_plane_idx[idx]].ac;
+        s_selected = -1;
+        strlcpy(s_selected_hex, aircraft->hex, sizeof(s_selected_hex));
+        for (int i = 0; i < s_shown_count; i++) {
+            if (strcmp(s_shown[i].ac.hex, s_selected_hex) == 0) {
+                s_selected = i;
+                break;
+            }
+        }
+        s_radar_bub_off = true;
         render_list_selection();
         if (s_view_mode != VIEW_DETAIL) {
             lv_timer_reset(s_cycle_timer);
         }
         render_right();
+        list_aircraft_card(aircraft);
     }
 }
 
@@ -1131,6 +1217,7 @@ static void build_list(lv_obj_t *scr)
         lv_obj_set_style_pad_all(row, UISY(8), 0);
         lv_obj_clear_flag(row, LV_OBJ_FLAG_SCROLLABLE);
         lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(row, row_hold_cb, LV_EVENT_ALL, (void *)(intptr_t)i);
         lv_obj_add_event_cb(row, row_click_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
 
         lv_obj_t *cs = make_label(row, UIFONT(&lv_font_montserrat_20, &lv_font_montserrat_12), COL_TEXT);
@@ -1816,7 +1903,7 @@ static void radar_area_changed(void)
 
 static bool radar_zoom_to_group(int index)
 {
-    if (index < 0 || index >= s_radar_group_count ||
+    if (!s_radar_view_ok || index < 0 || index >= s_radar_group_count ||
         s_radar_groups[index].count < 2 || s_radar_zoom <= 0.181) {
         return false;
     }
