@@ -311,7 +311,20 @@ bool ui_radar_show_ground(void)
 }
 static atomic_uint s_radar_area_revision;
 static unsigned s_aircraft_area_revision;
-static bool s_radar_follow_map;
+static bool s_radar_follow_map, s_radar_match_zoom;
+static atomic_int s_radar_query_radius_nm = 25;
+static double s_radar_query_lat, s_radar_query_lon;
+static lv_timer_t *s_radar_search_timer;
+
+static bool radar_tracks_map_center(void)
+{
+    return s_radar_follow_map || s_radar_match_zoom;
+}
+
+int ui_radar_query_radius_nm(void)
+{
+    return atomic_load_explicit(&s_radar_query_radius_nm, memory_order_relaxed);
+}
 static double s_radar_center_lat, s_radar_center_lon;
 static lv_point_t s_radar_press;
 static bool s_radar_pan_active;
@@ -327,11 +340,9 @@ unsigned ui_radar_area_revision(void)
 
 bool ui_radar_follow_center(double *lat, double *lon)
 {
-    if (!s_radar_follow_map) {
-        return false;
-    }
-    *lat = s_radar_center_lat;
-    *lon = s_radar_center_lon;
+    if (!radar_tracks_map_center()) return false;
+    *lat = s_radar_query_lat;
+    *lon = s_radar_query_lon;
     return true;
 }
 
@@ -1690,6 +1701,56 @@ static void render_map_panel(void)
 
 static void radar_tiles_want(void);
 
+#define RADAR_QUERY_MAX_NM 250
+
+static double radar_window_radius_nm(void)
+{
+    /* Use a circle large enough to reach the corners of the rectangular map. */
+    return ui_radar_radius_nm() * s_radar_zoom *
+           hypot(1.0, (double)RADAR_W / RADAR_H) / 0.92;
+}
+
+static void radar_commit_search(void)
+{
+    if (s_radar_search_timer != NULL) lv_timer_pause(s_radar_search_timer);
+    s_radar_query_lat = s_radar_center_lat;
+    s_radar_query_lon = s_radar_center_lon;
+    int radius = ui_radar_radius_nm();
+    if (s_radar_match_zoom) {
+        radius = (int)fmin(RADAR_QUERY_MAX_NM, fmax(1.0, ceil(radar_window_radius_nm())));
+    }
+    atomic_store_explicit(&s_radar_query_radius_nm, radius, memory_order_relaxed);
+    atomic_fetch_add_explicit(&s_radar_area_revision, 1, memory_order_relaxed);
+    ui_aircraft_refresh_failed();
+}
+
+static void radar_search_timer_cb(lv_timer_t *timer)
+{
+    (void)timer;
+    double lat = s_radar_query_lat, lon = s_radar_query_lon;
+    int radius = (int)fmin(RADAR_QUERY_MAX_NM, fmax(1.0, ceil(radar_window_radius_nm())));
+    if (radius == ui_radar_query_radius_nm() &&
+        lat == s_radar_center_lat && lon == s_radar_center_lon) {
+        lv_timer_pause(s_radar_search_timer);
+        return;
+    }
+    radar_commit_search();
+    render_radar_panel();
+}
+
+static void radar_schedule_search(void)
+{
+    if (s_radar_search_timer == NULL) {
+        s_radar_search_timer = lv_timer_create(radar_search_timer_cb, 500, NULL);
+        if (s_radar_search_timer == NULL) {
+            radar_commit_search();
+            return;
+        }
+    }
+    lv_timer_reset(s_radar_search_timer);
+    lv_timer_resume(s_radar_search_timer);
+}
+
 static void radar_position_cached_map(void)
 {
     lv_obj_set_pos(s_radar_img,
@@ -1862,6 +1923,7 @@ static void radar_zoom_step(int dir)
     }
     if (z == s_radar_zoom) return;
     s_radar_zoom = z;
+    if (s_radar_match_zoom) radar_schedule_search();
     ++s_radar_pan_revision;
     if (s_view_mode == VIEW_RADAR) {
         if (s_radar_view_ok) {
@@ -1915,8 +1977,7 @@ static void radar_dot_cb(lv_event_t *event)
 
 static void radar_area_changed(void)
 {
-    atomic_fetch_add_explicit(&s_radar_area_revision, 1, memory_order_relaxed);
-    ui_aircraft_refresh_failed();
+    radar_commit_search();
     render_radar_panel();
     render_list_rows();
 }
@@ -1931,7 +1992,10 @@ static bool radar_zoom_to_group(int index)
     s_radar_center_lat = group->lat_sum / group->count;
     s_radar_center_lon = remainder(group->lon_sum / group->count, 360.0);
     s_radar_zoom = fmax(0.18, s_radar_zoom * 0.55);
-    if (s_radar_follow_map) {
+    if (s_radar_match_zoom) {
+        radar_schedule_search();
+        render_radar_panel();
+    } else if (s_radar_follow_map) {
         radar_area_changed();
     } else {
         render_radar_panel();
@@ -1950,6 +2014,12 @@ static void radar_ground_cb(lv_event_t *event)
 static void radar_follow_cb(lv_event_t *event)
 {
     s_radar_follow_map = lv_obj_has_state(lv_event_get_target(event), LV_STATE_CHECKED);
+    radar_area_changed();
+}
+
+static void radar_match_zoom_cb(lv_event_t *event)
+{
+    s_radar_match_zoom = lv_obj_has_state(lv_event_get_target(event), LV_STATE_CHECKED);
     radar_area_changed();
 }
 
@@ -1994,7 +2064,10 @@ static void radar_pan_cb(lv_event_t *event)
         s_radar_center_lon = remainder(s_radar_center_lon - dx * degrees_per_pixel / fmax(0.1, cos(phi)), 360.0);
         s_radar_center_lat = fmax(-82.0, fmin(82.0, s_radar_center_lat + dy * degrees_per_pixel));
     }
-    if (s_radar_follow_map) {
+    if (s_radar_match_zoom) {
+        radar_schedule_search();
+        render_radar_panel();
+    } else if (s_radar_follow_map) {
         radar_area_changed();
     } else {
         render_radar_panel();
@@ -2070,7 +2143,7 @@ static void radar_home_cb(lv_event_t *event)
     s_radar_zoom = 1.0;
     s_radar_center_lat = s_home_lat;
     s_radar_center_lon = s_home_lon;
-    if (s_radar_follow_map) {
+    if (radar_tracks_map_center()) {
         radar_area_changed();
     } else {
         render_radar_panel();
@@ -2266,6 +2339,15 @@ static void build_radar_panel(lv_obj_t *scr)
     lv_obj_t *ground_text = make_label(ground, UIFONT(&font_pl_14, &font_pl_8), COL_TEXT);
     lv_label_set_text(ground_text, "Ground traffic");
     lv_obj_center(ground_text);
+    lv_obj_t *match_zoom = lv_btn_create(s_radar_panel);
+    lv_obj_set_size(match_zoom, UISX(106), UISY(32));
+    lv_obj_align(match_zoom, LV_ALIGN_TOP_RIGHT, -UISX(10), UISY(46));
+    lv_obj_add_flag(match_zoom, LV_OBJ_FLAG_CHECKABLE);
+    lv_obj_add_event_cb(match_zoom, radar_match_zoom_cb, LV_EVENT_VALUE_CHANGED, NULL);
+    lv_obj_t *match_text = make_label(match_zoom, UIFONT(&font_pl_14, &font_pl_8), COL_TEXT);
+    lv_label_set_text(match_text, "Match zoom");
+    lv_obj_center(match_text);
+
     lv_obj_t *set_home = lv_btn_create(s_radar_panel);
     lv_obj_set_size(set_home, UISX(88), UISY(32));
     lv_obj_align(set_home, LV_ALIGN_TOP_LEFT, UISX(10), UISY(46));
@@ -2365,23 +2447,21 @@ static void radar_project(double lat, double lon, int *x, int *y)
 static bool radar_place(double lat, double lon, float dist_km,
                         bool map_mode, int radius_nm, int *x, int *y)
 {
-    double area_lat = s_radar_follow_map ? s_radar_center_lat : s_home_lat;
-    double area_lon = s_radar_follow_map ? s_radar_center_lon : s_home_lon;
+    double area_lat = radar_tracks_map_center() ? s_radar_center_lat : s_home_lat;
+    double area_lon = radar_tracks_map_center() ? s_radar_center_lon : s_home_lon;
+    const int search_radius = s_radar_match_zoom ? ui_radar_query_radius_nm() : radius_nm;
     if (map_mode) {
-        if (s_aircraft_area_revision != ui_radar_area_revision() &&
-            geo_haversine_km(area_lat, area_lon, lat, lon) > radius_nm * 1.852) {
+        if ((s_radar_match_zoom || s_aircraft_area_revision != ui_radar_area_revision()) &&
+            geo_haversine_km(area_lat, area_lon, lat, lon) > search_radius * 1.852) {
             return false;
         }
         radar_project(lat, lon, x, y);
         return *x >= -10 && *x <= RADAR_W + 10 && *y >= -10 && *y <= RADAR_H + 10;
     }
-    float frac = (s_radar_follow_map || s_aircraft_area_revision != ui_radar_area_revision())
-        ? (float)(geo_haversine_km(area_lat, area_lon, lat, lon) / (radius_nm * 1.852))
-        : dist_km / (radius_nm * 1.852f);
-    if (frac > 1.0f) {
-        return false;
-    }
-    frac /= (float)s_radar_zoom;
+    float distance = radar_tracks_map_center() || s_aircraft_area_revision != ui_radar_area_revision()
+        ? (float)geo_haversine_km(area_lat, area_lon, lat, lon) : dist_km;
+    if (distance > search_radius * 1.852f) return false;
+    float frac = distance / (radius_nm * 1.852f * (float)s_radar_zoom);
     if (frac > 1.0f) {
         return false;
     }
@@ -2787,8 +2867,8 @@ static void radar_offline_airports(bool show, int radius_nm)
     static double cached_lat, cached_lon;
     static int cached_radius;
     static size_t count;
-    double lat = s_radar_follow_map ? s_radar_center_lat : s_home_lat;
-    double lon = s_radar_follow_map ? s_radar_center_lon : s_home_lon;
+    double lat = radar_tracks_map_center() ? s_radar_center_lat : s_home_lat;
+    double lon = radar_tracks_map_center() ? s_radar_center_lon : s_home_lon;
     if (show && s_home_ok && (lat != cached_lat || lon != cached_lon || radius_nm != cached_radius)) {
         count = airports_nearby(lat, lon, radius_nm * 1.852, airports, MAX_MARKERS);
         cached_lat = lat;
@@ -2847,10 +2927,12 @@ static void render_radar_panel(void)
     int rpx = RADAR_R;
 
     if (map_mode) {
-        double area_lat = s_radar_follow_map ? s_radar_center_lat : s_home_lat;
-        double area_lon = s_radar_follow_map ? s_radar_center_lon : s_home_lon;
+        double area_lat = radar_tracks_map_center() ? s_radar_center_lat : s_home_lat;
+        double area_lon = radar_tracks_map_center() ? s_radar_center_lon : s_home_lon;
+        int search_radius = s_radar_match_zoom ? ui_radar_query_radius_nm() : radius_nm;
+        bool coverage_capped = s_radar_match_zoom && radar_window_radius_nm() > RADAR_QUERY_MAX_NM;
         radar_project(area_lat, area_lon, &hx, &hy);
-        double edge_lon = area_lon + radius_nm * 1.852 / (111.0 * fmax(0.1, cos(area_lat * M_PI / 180.0)));
+        double edge_lon = area_lon + search_radius * 1.852 / (111.0 * fmax(0.1, cos(area_lat * M_PI / 180.0)));
         int ex, ey;
         radar_project(area_lat, edge_lon, &ex, &ey);
         rpx = ex - hx;
@@ -2858,7 +2940,7 @@ static void render_radar_panel(void)
             rpx = 20;
         }
         lv_obj_clear_flag(s_radar_img, LV_OBJ_FLAG_HIDDEN);
-        if (s_radar_show_rings) {
+        if (s_radar_show_rings || coverage_capped) {
             lv_obj_clear_flag(s_radar_rings[2], LV_OBJ_FLAG_HIDDEN);
         } else {
             lv_obj_add_flag(s_radar_rings[2], LV_OBJ_FLAG_HIDDEN);
@@ -2868,7 +2950,8 @@ static void render_radar_panel(void)
         lv_obj_add_flag(s_radar_rings[0], LV_OBJ_FLAG_HIDDEN);
         lv_obj_add_flag(s_radar_rings[1], LV_OBJ_FLAG_HIDDEN);
         lv_obj_set_pos(s_radar_home, hx - UISX(5), hy - UISY(5));
-        lv_label_set_text_fmt(s_radar_range, "%d NM", radius_nm);
+        lv_label_set_text_fmt(s_radar_range, "%d NM%s", search_radius,
+                              coverage_capped ? " coverage limit" : "");
     } else {
         lv_obj_add_flag(s_radar_img, LV_OBJ_FLAG_HIDDEN);
         for (int i = 0; i < 3; i++) {
@@ -2887,8 +2970,8 @@ static void render_radar_panel(void)
     typedef struct { int x, y, group; bool visible; } radar_point_t;
     radar_point_t points[MAX_AIRCRAFT] = {0};
     s_radar_group_count = 0;
-    double center_lat = s_radar_follow_map ? s_radar_center_lat : s_home_lat;
-    double center_lon = s_radar_follow_map ? s_radar_center_lon : s_home_lon;
+    double center_lat = radar_tracks_map_center() ? s_radar_center_lat : s_home_lat;
+    double center_lon = radar_tracks_map_center() ? s_radar_center_lon : s_home_lon;
     if (planes_on) {
         for (int i = 0; i < s_all_count; i++) {
             const amb_target_t *target = &s_all[i];

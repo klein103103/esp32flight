@@ -830,13 +830,11 @@ static void flight_task(void *arg)
         /* Aircraft first: everything else (weather, layers, update check)
          * runs after the fetch + render, so it can never delay positions. */
         double query_lat = lat, query_lon = lon;
+        if (!lvgl_port_lock(1000)) continue;
         unsigned area_revision = ui_radar_area_revision();
-        if (lvgl_port_lock(1000)) {
-            area_revision = ui_radar_area_revision();
-            ui_radar_follow_center(&query_lat, &query_lon);
-            lvgl_port_unlock();
-        }
-        radius_nm = ui_radar_radius_nm();
+        ui_radar_follow_center(&query_lat, &query_lon);
+        radius_nm = ui_radar_query_radius_nm();
+        lvgl_port_unlock();
         esp_err_t err = flight_fetch_nearby(query_lat, query_lon, radius_nm, list);
         if (area_revision != ui_radar_area_revision()) {
             continue;
