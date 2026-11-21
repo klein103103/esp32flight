@@ -262,7 +262,27 @@ static lv_obj_t *s_radar_range;
 static lv_obj_t *s_radar_source;
 static bool s_radar_show_rings;
 static atomic_int s_radar_radius_nm = 25;
+static atomic_uint s_radar_area_revision;
+static unsigned s_aircraft_area_revision;
+static bool s_radar_follow_map;
+static double s_radar_center_lat, s_radar_center_lon;
+static lv_point_t s_radar_press;
 static const int s_radar_ranges_nm[] = {5, 10, 25, 50, 100, 250};
+
+unsigned ui_radar_area_revision(void)
+{
+    return atomic_load_explicit(&s_radar_area_revision, memory_order_relaxed);
+}
+
+bool ui_radar_follow_center(double *lat, double *lon)
+{
+    if (!s_radar_follow_map) {
+        return false;
+    }
+    *lat = s_radar_center_lat;
+    *lon = s_radar_center_lon;
+    return true;
+}
 
 int ui_radar_radius_nm(void)
 {
@@ -335,6 +355,8 @@ void ui_set_home(double lat, double lon)
 {
     s_home_lat = lat;
     s_home_lon = lon;
+    s_radar_center_lat = lat;
+    s_radar_center_lon = lon;
     s_home_ok = true;
     ESP_LOGI("ui", "home set: %.4f, %.4f", lat, lon);
 }
@@ -511,7 +533,7 @@ static void logo_tick_cb(lv_timer_t *t)
 static void aircraft_status_timer_cb(lv_timer_t *timer)
 {
     (void)timer;
-    if (s_radar_source == NULL || s_aircraft_source == NULL) {
+    if (s_radar_source == NULL) {
         return;
     }
     int64_t now_ms = esp_timer_get_time() / 1000;
@@ -519,6 +541,14 @@ static void aircraft_status_timer_cb(lv_timer_t *timer)
         now_ms - s_aircraft_failure_ms >= 60000) {
         s_aircraft_cleared = true;
         ui_update(NULL);
+    }
+    if (s_aircraft_area_revision != ui_radar_area_revision() && !s_aircraft_cleared) {
+        label_set_if_changed(s_radar_source, "Loading aircraft for this area…");
+        return;
+    }
+    if (s_aircraft_source == NULL) {
+        label_set_if_changed(s_radar_source, "Waiting for aircraft data");
+        return;
     }
     char status[96];
     snprintf(status, sizeof(status), "%s | %lld s%s", s_aircraft_source,
@@ -1502,6 +1532,7 @@ static void radar_tiles_job(void)
 {
     char key[48];
     double b[4];
+    double zoom = s_radar_zoom;
     strlcpy(key, s_radar_want, sizeof(key));
     memcpy(b, s_radar_bbox, sizeof(b));
 
@@ -1526,10 +1557,12 @@ static void radar_tiles_job(void)
     int shx = 0, shy = 0;
     if (ok) {
         int ex, ey;
-        tilemap_project(&view, s_home_lat, s_home_lon, &shx, &shy);
-        tilemap_project(&view, s_home_lat, b[3], &ex, &ey);
+        double center_lat = (b[0] + b[1]) * 0.5;
+        double center_lon = (b[2] + b[3]) * 0.5;
+        tilemap_project(&view, center_lat, center_lon, &shx, &shy);
+        tilemap_project(&view, center_lat, b[3], &ex, &ey);
         float r = (float)(ex - shx);
-        float target = 0.92f * (RADAR_RENDER_H / 2) / (float)s_radar_zoom;
+        float target = 0.92f * (RADAR_RENDER_H / 2) / (float)zoom;
         if (r > 16.0f && target / r > 1.05f) {
             scale = target / r;
             if (scale > 2.6f) {
@@ -1603,7 +1636,7 @@ static void radar_tiles_want(void)
     }
     int radius_nm = ui_radar_radius_nm();
     char key[48];
-    snprintf(key, sizeof(key), "%.3f,%.3f,%d,%.2f", s_home_lat, s_home_lon,
+    snprintf(key, sizeof(key), "%.4f,%.4f,%d,%.2f", s_radar_center_lat, s_radar_center_lon,
              radius_nm, s_radar_zoom);
     int64_t now_ms = esp_timer_get_time() / 1000;
     bool radar_stale = s_radar_partial_ms != 0 && now_ms - s_radar_partial_ms > 20000;
@@ -1620,11 +1653,11 @@ static void radar_tiles_want(void)
         rkm = 2.0;
     }
     double dlat = rkm / 111.0;
-    double dlon = rkm / (111.0 * cos(s_home_lat * M_PI / 180.0));
-    s_radar_bbox[0] = s_home_lat - dlat;
-    s_radar_bbox[1] = s_home_lat + dlat;
-    s_radar_bbox[2] = s_home_lon - dlon;
-    s_radar_bbox[3] = s_home_lon + dlon;
+    double dlon = rkm / (111.0 * cos(s_radar_center_lat * M_PI / 180.0));
+    s_radar_bbox[0] = fmax(-85.0, s_radar_center_lat - dlat);
+    s_radar_bbox[1] = fmin(85.0, s_radar_center_lat + dlat);
+    s_radar_bbox[2] = s_radar_center_lon - dlon;
+    s_radar_bbox[3] = s_radar_center_lon + dlon;
     LV_LOG_USER("radar bbox %.3f..%.3f / %.3f..%.3f (home %.3f,%.3f r=%d)",
                 s_radar_bbox[0], s_radar_bbox[1], s_radar_bbox[2], s_radar_bbox[3],
                 s_home_lat, s_home_lon, radius_nm);
@@ -1684,12 +1717,60 @@ static void radar_dot_cb(lv_event_t *e)
     }
 }
 
+static void radar_area_changed(void)
+{
+    atomic_fetch_add_explicit(&s_radar_area_revision, 1, memory_order_relaxed);
+    ui_aircraft_refresh_failed();
+    render_radar_panel();
+    render_list_rows();
+}
+
+static void radar_follow_cb(lv_event_t *event)
+{
+    s_radar_follow_map = lv_obj_has_state(lv_event_get_target(event), LV_STATE_CHECKED);
+    radar_area_changed();
+}
+
+static void radar_pan_cb(lv_event_t *event)
+{
+    lv_indev_t *input = lv_indev_get_act();
+    if (input == NULL || !s_home_ok) {
+        return;
+    }
+    lv_point_t point;
+    lv_indev_get_point(input, &point);
+    if (lv_event_get_code(event) == LV_EVENT_PRESSED) {
+        s_radar_press = point;
+        return;
+    }
+    int dx = point.x - s_radar_press.x;
+    int dy = point.y - s_radar_press.y;
+    if (abs(dx) + abs(dy) < 10) {
+        return;
+    }
+    double deg_per_pixel = ui_radar_radius_nm() * 1.852 * s_radar_zoom / (111.0 * RADAR_R);
+    double cos_lat = cos(s_radar_center_lat * M_PI / 180.0);
+    s_radar_center_lon = remainder(s_radar_center_lon - dx * deg_per_pixel / fmax(0.1, cos_lat), 360.0);
+    s_radar_center_lat = fmax(-82.0, fmin(82.0, s_radar_center_lat + dy * deg_per_pixel));
+    if (s_radar_follow_map) {
+        radar_area_changed();
+    } else {
+        render_radar_panel();
+    }
+}
+
 static void radar_home_cb(lv_event_t *event)
 {
     (void)event;
     s_radar_zoom = 1.0;
-    render_radar_panel();
-    render_list_rows();
+    s_radar_center_lat = s_home_lat;
+    s_radar_center_lon = s_home_lon;
+    if (s_radar_follow_map) {
+        radar_area_changed();
+    } else {
+        render_radar_panel();
+        render_list_rows();
+    }
 }
 
 static void radar_range_cb(lv_event_t *event)
@@ -1697,8 +1778,7 @@ static void radar_range_cb(lv_event_t *event)
     unsigned selected = lv_dropdown_get_selected(lv_event_get_target(event));
     if (selected < sizeof(s_radar_ranges_nm) / sizeof(s_radar_ranges_nm[0])) {
         atomic_store_explicit(&s_radar_radius_nm, s_radar_ranges_nm[selected], memory_order_relaxed);
-        render_radar_panel();
-        render_list_rows();
+        radar_area_changed();
     }
 }
 
@@ -1711,6 +1791,10 @@ static void radar_rings_cb(lv_event_t *event)
 static void build_radar_panel(lv_obj_t *scr)
 {
     s_radar_panel = make_panel(scr);
+    lv_obj_clear_flag(s_radar_panel, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(s_radar_panel, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(s_radar_panel, radar_pan_cb, LV_EVENT_PRESSED, NULL);
+    lv_obj_add_event_cb(s_radar_panel, radar_pan_cb, LV_EVENT_RELEASED, NULL);
     lv_obj_set_size(s_radar_panel, RADAR_W, RADAR_H);
     lv_obj_set_pos(s_radar_panel, LIST_W, HEADER_H);
     lv_obj_set_style_bg_color(s_radar_panel, COL_BG, 0);
@@ -1825,6 +1909,15 @@ static void build_radar_panel(lv_obj_t *scr)
     lv_obj_set_width(range, UISX(100));
     lv_obj_align(range, LV_ALIGN_TOP_RIGHT, -UISX(154), UISY(8));
     lv_obj_add_event_cb(range, radar_range_cb, LV_EVENT_VALUE_CHANGED, NULL);
+
+    lv_obj_t *follow = lv_btn_create(s_radar_panel);
+    lv_obj_set_size(follow, UISX(96), UISY(32));
+    lv_obj_align(follow, LV_ALIGN_TOP_RIGHT, -UISX(262), UISY(8));
+    lv_obj_add_flag(follow, LV_OBJ_FLAG_CHECKABLE);
+    lv_obj_add_event_cb(follow, radar_follow_cb, LV_EVENT_VALUE_CHANGED, NULL);
+    lv_obj_t *follow_text = make_label(follow, UIFONT(&font_pl_14, &font_pl_8), COL_TEXT);
+    lv_label_set_text(follow_text, "Follow Map");
+    lv_obj_center(follow_text);
 }
 
 /* ---------- optional extra objects: ISS, radiosondes, AIS ships ---------- */
@@ -1907,15 +2000,23 @@ static void radar_project(double lat, double lon, int *x, int *y)
 static bool radar_place(double lat, double lon, float dist_km,
                         bool map_mode, int radius_nm, int *x, int *y)
 {
+    double area_lat = s_radar_follow_map ? s_radar_center_lat : s_home_lat;
+    double area_lon = s_radar_follow_map ? s_radar_center_lon : s_home_lon;
     if (map_mode) {
+        if (s_aircraft_area_revision != ui_radar_area_revision() &&
+            geo_haversine_km(area_lat, area_lon, lat, lon) > radius_nm * 1.852) {
+            return false;
+        }
         radar_project(lat, lon, x, y);
         return *x >= -10 && *x <= RADAR_W + 10 && *y >= -10 && *y <= RADAR_H + 10;
     }
-    float frac = dist_km / (radius_nm * 1.852f);
+    float frac = (s_radar_follow_map || s_aircraft_area_revision != ui_radar_area_revision())
+        ? (float)(geo_haversine_km(area_lat, area_lon, lat, lon) / (radius_nm * 1.852))
+        : dist_km / (radius_nm * 1.852f);
     if (frac > 1.0f) {
         return false;
     }
-    float rad = (float)geo_bearing_deg(s_home_lat, s_home_lon, lat, lon) *
+    float rad = (float)geo_bearing_deg(area_lat, area_lon, lat, lon) *
                 (float)M_PI / 180.0f;
     *x = RADAR_CX + (int)(sinf(rad) * frac * RADAR_R);
     *y = RADAR_CY - (int)(cosf(rad) * frac * RADAR_R);
@@ -4408,6 +4509,7 @@ void ui_update(const aircraft_list_t *list)
     if (list != NULL && list->source != NULL) {
         s_aircraft_source = list->source;
         s_aircraft_snapshot_ms = list->fetched_at_ms;
+        s_aircraft_area_revision = list->area_revision;
         s_aircraft_failure_ms = -1;
         s_aircraft_cleared = false;
     }

@@ -72,6 +72,7 @@ typedef struct {
     int        count;
     long long  fetched_at_ms;
     const char *source;
+    unsigned    area_revision;
 } aircraft_list_t;
 
 /* Scheduled airline traffic: callsign like "RYR76ZJ" (3-letter ICAO airline
