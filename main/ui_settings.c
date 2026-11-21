@@ -49,7 +49,7 @@ static lv_obj_t *s_dd_cpa_scope, *s_dd_aptmode;
 static lv_obj_t *s_ta_night_from, *s_ta_night_to, *s_ta_amb_idle;
 static lv_obj_t *s_ta_amb_from, *s_ta_amb_to, *s_sw_amb_sched, *s_sw_pin_near, *s_sw_lmerge;
 static lv_obj_t *s_dd_networks, *s_dd_cities, *s_dd_theme, *s_dd_lang;
-static lv_obj_t *s_sw_auto, *s_sw_ground, *s_sw_cpa, *s_sw_night;
+static lv_obj_t *s_sw_auto, *s_sw_cpa, *s_sw_night;
 static lv_obj_t *s_sw_cls[FCLS_COUNT];
 static lv_obj_t *s_sw_rain;
 static lv_obj_t *s_sw_airsp, *s_sw_iss, *s_sw_sonde, *s_sw_ships, *s_sw_taf;
