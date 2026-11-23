@@ -1,4 +1,10 @@
 #pragma once
+#include <stdbool.h>
+#include <stddef.h>
+
+#ifndef APKFLIGHT
+bool tilemap_import_sd_tile(unsigned z, unsigned x, unsigned y, const void *data, size_t size);
+#endif
 
 #include <stdbool.h>
 #include <stdint.h>

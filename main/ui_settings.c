@@ -313,6 +313,14 @@ static void ota_unlock_cb(lv_event_t *e)
         lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED);
 }
 
+#ifndef APKFLIGHT
+static void sd_upload_cb(lv_event_t *event)
+{
+    settings_get()->sd_upload_enabled =
+        lv_obj_has_state(lv_event_get_target(event), LV_STATE_CHECKED);
+}
+#endif
+
 static int parse_hhmm(const char *txt, int fallback)
 {
     int h = 0, m = 0;
@@ -903,7 +911,9 @@ void ui_settings_open(void)
     if (ui_update_available()) {
         add_button(p, 530, 1022, 140, 44, "Install", install_private_update_cb, COL_PANEL);
     }
-    int nety = 1090;
+    lv_obj_t *sw_upload = add_switch(p, "Wi-Fi SD transfer", 0, 1080, cfg->sd_upload_enabled);
+    lv_obj_add_event_cb(sw_upload, sd_upload_cb, LV_EVENT_VALUE_CHANGED, NULL);
+    int nety = 1140;
 #endif
 
     s_sw_tz_manual = add_switch(p, "Manual time zone", 0, nety, cfg->time_zone_manual);

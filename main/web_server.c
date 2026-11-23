@@ -26,6 +26,10 @@
 #include "airports.h"
 #include "ui.h"
 #include "ui_settings.h"
+#ifndef APKFLIGHT
+#include "sd_cache.h"
+#include "tilemap.h"
+#endif
 #include "flight_model.h"
 #include "waveshare_rgb_lcd_port.h"
 
@@ -316,6 +320,9 @@ static const char INDEX_HTML[] =
 "<div style='margin-top:8px'><button type='button' onclick='inLearn()'>Add mapping (learn: press or turn now)</button> <button type='button' onclick='inManual()'>Add manually</button> <span id='instat' class='dim'></span></div>"
 "<div class='help'>Learn listens for 6 seconds: press a button once (short or long chosen in the row) or turn the encoder one click. GPIO entries (g17s, q17,18) are added manually - unmapped GPIOs are not polled, so learn cannot see them. Save and restart applies the map.</div>"
 "</div>"
+"<div class='cfgcard'><h4>Wi-Fi SD transfer</h4>"
+"<div class='help'>Enable Wi-Fi SD transfer on the touchscreen under Settings → System. Use a model code such as B737 or a six-digit aircraft hex. For an offline map tile, enter zoom/x/y for the active map source.</div>"
+"<select id='sdkind'><option value='model'>Model JPEG</option><option value='aircraft'>Aircraft JPEG</option><option value='tile'>Map tile PNG</option></select> <input id='sdname' placeholder='B737, a24c77, or 8/64/96'> <input id='sdfile' type='file' accept='.jpg,.jpeg,.png'> <button type='button' onclick='sdUpload()'>Upload to SD</button> <span id='sdstatus'></span></div>"
 "<div class='cfgcard'><h4>Backup</h4><div class='grid2'>"
 "<div><label>Download</label><a href='/api/backup' download><button type='button'>Backup settings (JSON)</button></a>"
 "<div class='help'>Everything including Wi-Fi and API keys. Keep it private.</div></div>"
@@ -620,6 +627,10 @@ static const char INDEX_HTML[] =
 "function trkSel(){const f=((lastd&&lastd.flights)||[]).find(x=>x.hex===selHex);"
 "if(f)document.getElementById('trk_id').value=(f.callsign||f.reg||f.hex).trim();}"
 "(async()=>{await load();await loadCfg();await trkLoad();})();setInterval(load,5000);setInterval(trkLoad,15000);"
+"async function sdUpload(){const f=document.getElementById('sdfile').files[0];if(!f)return;"
+"const st=document.getElementById('sdstatus');st.textContent='Uploading…';"
+"const kind=document.getElementById('sdkind').value,name=document.getElementById('sdname').value.trim();"
+"try{const r=await fetch('/api/sd-upload?kind='+kind+'&name='+encodeURIComponent(name),{method:'POST',headers:{'Content-Type':'application/octet-stream'},body:f});st.textContent=await r.text();}catch(e){st.textContent='Transfer failed';}}"
 "async function ota(){const f=document.getElementById('fw').files[0];if(!f)return;"
 "const st=document.getElementById('otastat');st.textContent='uploading...';"
 "try{const r=await fetch('/ota',{method:'POST',body:f});"
@@ -1307,6 +1318,92 @@ static esp_err_t view_get(httpd_req_t *req)
 }
 #endif
 
+#ifndef APKFLIGHT
+static esp_err_t sd_upload_post(httpd_req_t *req)
+{
+    AUTH_GUARD(req);
+    if (!settings_get()->sd_upload_enabled || settings_get()->web_pass[0] == '\0') {
+        return httpd_resp_send_err(req, HTTPD_403_FORBIDDEN,
+                                   "Enable Wi-Fi SD transfer and set a web panel password in device settings");
+    }
+    if (!sd_cache_ready()) {
+        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "SD card unavailable");
+    }
+    char content_type[32], query[72], kind[12], name[22], path[48];
+    if (httpd_req_get_hdr_value_str(req, "Content-Type", content_type, sizeof(content_type)) != ESP_OK ||
+        strcmp(content_type, "application/octet-stream") != 0 ||
+        httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK ||
+        httpd_query_key_value(query, "kind", kind, sizeof(kind)) != ESP_OK ||
+        httpd_query_key_value(query, "name", name, sizeof(name)) != ESP_OK) {
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid file transfer parameters");
+    }
+    size_t len = strlen(name);
+    bool tile = strcmp(kind, "tile") == 0;
+    unsigned z = 0, x = 0, y = 0;
+    if (strcmp(kind, "model") == 0 && len >= 2 && len <= 4 &&
+        strspn(name, "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789") == len) {
+        snprintf(path, sizeof(path), "/sd/radar/models/%s.jpg", name);
+    } else if (strcmp(kind, "aircraft") == 0 && len == 6 &&
+               strspn(name, "0123456789abcdefABCDEF") == len) {
+        snprintf(path, sizeof(path), "/sd/radar/photos/%06lx.jpg", strtoul(name, NULL, 16));
+    } else if (tile) {
+        const char *part = name;
+        char *end;
+        if (strspn(name, "0123456789/") != len) {
+            return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Use zoom/x/y for a map tile");
+        }
+        unsigned long zz = strtoul(part, &end, 10);
+        if (end == part || *end != '/' || zz > 13) {
+            return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid tile zoom");
+        }
+        part = end + 1;
+        unsigned long xx = strtoul(part, &end, 10);
+        if (end == part || *end != '/' || xx >= (1UL << zz)) {
+            return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid tile x coordinate");
+        }
+        part = end + 1;
+        unsigned long yy = strtoul(part, &end, 10);
+        if (end == part || *end != '\0' || yy >= (1UL << zz)) {
+            return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid tile y coordinate");
+        }
+        z = zz;
+        x = xx;
+        y = yy;
+    } else {
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Use an uppercase model code or six-digit aircraft hex");
+    }
+
+    size_t size = req->content_len;
+    if (size < (tile ? 33 : 4) || size > (tile ? 96 * 1024 : 512 * 1024)) {
+        return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "File is empty or exceeds the cache size limit");
+    }
+    uint8_t *data = heap_caps_malloc(size, MALLOC_CAP_SPIRAM);
+    if (data == NULL) {
+        return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Transfer buffer unavailable");
+    }
+    size_t received = 0;
+    int64_t deadline = esp_timer_get_time() + 10000000;
+    while (received < size && settings_get()->sd_upload_enabled && esp_timer_get_time() < deadline) {
+        int n = httpd_req_recv(req, (char *)data + received, size - received);
+        if (n <= 0) break;
+        received += (size_t)n;
+    }
+    const bool valid = received == size && (tile ?
+        memcmp(data, "\x89PNG\r\n\x1a\n", 8) == 0 &&
+        memcmp(data + 12, "IHDR\0\0\1\0\0\0\1\0", 12) == 0 :
+        data[0] == 0xff && data[1] == 0xd8 && data[size - 2] == 0xff && data[size - 1] == 0xd9);
+    bool enabled = settings_get()->sd_upload_enabled;
+    bool saved = enabled && valid && (tile ?
+        tilemap_import_sd_tile(z, x, y, data, size) : sd_cache_write_photo(path, data, size));
+    free(data);
+    if (received != size) return ESP_FAIL;
+    if (!enabled) return httpd_resp_send_err(req, HTTPD_403_FORBIDDEN, "Wi-Fi SD transfer was switched off");
+    if (!valid) return httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Expected a JPEG or a 256×256 PNG tile");
+    if (!saved) return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Could not write SD cache file");
+    return httpd_resp_sendstr(req, "Saved to SD");
+}
+#endif
+
 static esp_err_t ota_post(httpd_req_t *req)
 {
     AUTH_GUARD(req);
@@ -1509,6 +1606,9 @@ void web_server_start(void)
         { .uri = "/api/track", .method = HTTP_POST, .handler = track_req },
 #endif
         { .uri = "/metrics", .method = HTTP_GET, .handler = metrics_get },
+#ifndef APKFLIGHT
+        { .uri = "/api/sd-upload", .method = HTTP_POST, .handler = sd_upload_post },
+#endif
         { .uri = "/ota", .method = HTTP_POST, .handler = ota_post },
     };
     for (size_t i = 0; i < sizeof(uris) / sizeof(uris[0]); i++) {
