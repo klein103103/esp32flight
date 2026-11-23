@@ -2382,7 +2382,7 @@ static void build_radar_panel(lv_obj_t *scr)
 #ifdef CONFIG_CANFLIGHT_BOARD_WAVESHARE_7B
     lv_obj_t *preload = lv_btn_create(s_radar_panel);
     lv_obj_set_size(preload, UISX(120), UISY(32));
-    lv_obj_align(preload, LV_ALIGN_TOP_LEFT, UISX(10), UISY(122));
+    lv_obj_align(preload, LV_ALIGN_TOP_RIGHT, -UISX(10), UISY(46));
     lv_obj_add_event_cb(preload, radar_preload_models_cb, LV_EVENT_CLICKED, NULL);
     lv_obj_t *preload_text = make_label(preload, UIFONT(&font_pl_14, &font_pl_8), COL_TEXT);
     lv_label_set_text(preload_text, "Preload photos");
