@@ -110,11 +110,11 @@ bool sd_cache_write_photo(const char *path, const void *buffer, size_t size)
     return saved;
 }
 
-bool sd_cache_write_tile(const char *directory, const char *path,
+static bool write_sd_tile(const char *directory, const char *path,
                          const void *buffer, size_t size)
 {
     if (!sd_cache_ready()) return false;
-    /* The map worker is the only writer. Avoid rescanning FAT for each tile. */
+    /* Avoid rescanning FAT for each tile. The caller serializes writes. */
     static int64_t next_space_check;
     static uint64_t free_bytes;
     int64_t now = esp_timer_get_time();
@@ -128,4 +128,14 @@ bool sd_cache_write_tile(const char *directory, const char *path,
     if (!write_cache_file(path, buffer, size)) return false;
     free_bytes -= size;
     return true;
+}
+
+bool sd_cache_write_tile(const char *directory, const char *path,
+                         const void *buffer, size_t size)
+{
+    static atomic_flag writing = ATOMIC_FLAG_INIT;
+    if (atomic_flag_test_and_set(&writing)) return false;
+    bool saved = write_sd_tile(directory, path, buffer, size);
+    atomic_flag_clear(&writing);
+    return saved;
 }

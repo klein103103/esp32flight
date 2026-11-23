@@ -630,7 +630,7 @@ static const char INDEX_HTML[] =
 "async function sdUpload(){const f=document.getElementById('sdfile').files[0];if(!f)return;"
 "const st=document.getElementById('sdstatus');st.textContent='Uploading…';"
 "const kind=document.getElementById('sdkind').value,name=document.getElementById('sdname').value.trim();"
-"try{const r=await fetch('/api/sd-upload?kind='+kind+'&name='+encodeURIComponent(name),{method:'POST',headers:{'Content-Type':'application/octet-stream'},body:f});st.textContent=await r.text();}catch(e){st.textContent='Transfer failed';}}"
+"try{const r=await fetch('/api/sd-upload?kind='+kind+'&name='+encodeURIComponent(kind==='model'?name.toUpperCase():name).replace(/%2F/g,'/'),{method:'POST',headers:{'Content-Type':'application/octet-stream'},body:f});st.textContent=await r.text();}catch(e){st.textContent='Transfer failed';}}"
 "async function ota(){const f=document.getElementById('fw').files[0];if(!f)return;"
 "const st=document.getElementById('otastat');st.textContent='uploading...';"
 "try{const r=await fetch('/ota',{method:'POST',body:f});"

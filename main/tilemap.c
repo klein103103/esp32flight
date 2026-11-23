@@ -326,7 +326,8 @@ bool tilemap_import_sd_tile(unsigned z, unsigned x, unsigned y, const void *data
     if (z > 13 || x >= (1u << z) || y >= (1u << z) || size > TILE_BUF) return false;
     char directory[32], path[56];
     const uint32_t key = (z << 26) | (x << 13) | y;
-    sd_tile_path(key, directory, sizeof(directory), path, sizeof(path));
+    snprintf(directory, sizeof(directory), "/sd/radar/tiles/%08lx", (unsigned long)tile_source_sig());
+    snprintf(path, sizeof(path), "%s/%08lx.png", directory, (unsigned long)key);
     return sd_cache_write_tile(directory, path, data, size);
 }
 #endif
