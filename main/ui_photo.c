@@ -17,6 +17,7 @@
 #include "lang.h"
 #include "lvgl_port.h"
 #include "theme.h"
+#include "ui.h"
 #include "routes.h"
 #include "geo_math.h"
 #ifndef APKFLIGHT
@@ -69,6 +70,9 @@ typedef struct {
 } photo_req_t;
 
 static photo_req_t s_photo_request;
+#ifndef APKFLIGHT
+static bool s_preload_requested;
+#endif
 
 static const char *TAG = "photo";
 
@@ -166,6 +170,11 @@ static uint16_t *fetch_representative_photo(const aircraft_t *aircraft, char *js
 
     const char *search = type;
     if (strcmp(type, "A21N") == 0) search = "Airbus%20A321neo";
+    if (strcmp(type, "A320") == 0) search = "Airbus%20A320-200";
+    if (strcmp(type, "A20N") == 0) search = "Airbus%20A320neo";
+    if (strcmp(type, "B737") == 0) search = "Boeing%20737-700";
+    if (strcmp(type, "B738") == 0) search = "Boeing%20737-800";
+    if (strcmp(type, "B38M") == 0) search = "Boeing%20737%20MAX%208";
     if (strcmp(type, "B739") == 0) search = "Boeing%20737-900";
     if (strcmp(type, "B39M") == 0) search = "Boeing%20737%20MAX%209";
     char api[512];
@@ -458,12 +467,82 @@ static void process_photo_request(const photo_req_t *req)
              req->aircraft.callsign, req->hex, exact, model_visible);
 }
 
+#ifndef APKFLIGHT
+static void preload_model_library(void)
+{
+    static const char *const models[] = {"B737", "B738", "B739", "B38M", "A320", "A20N", "A21N"};
+    uint8_t *raw = heap_caps_malloc(PHOTO_MAX_BYTES, MALLOC_CAP_SPIRAM);
+    char *json = heap_caps_malloc(8192, MALLOC_CAP_SPIRAM);
+    unsigned saved = 0, cached = 0;
+    if (raw != NULL && json != NULL) {
+        aircraft_t aircraft = {0};
+        for (size_t i = 0; i < sizeof(models) / sizeof(models[0]); i++) {
+            char image[48], attribution[48], credit[128];
+            snprintf(image, sizeof(image), "/sd/radar/models/%s.jpg", models[i]);
+            snprintf(attribution, sizeof(attribution), "/sd/radar/models/%s.txt", models[i]);
+            int w = 0, h = 0;
+            size_t size = 0;
+            uint16_t *pixels = read_photo(image, raw, &w, &h, &size);
+            if (pixels != NULL) {
+                free(pixels);
+                cached++;
+                continue;
+            }
+            strlcpy(aircraft.type_icao, models[i], sizeof(aircraft.type_icao));
+            pixels = fetch_representative_photo(&aircraft, json, raw, &w, &h, &size,
+                                                 credit, sizeof(credit));
+            if (pixels != NULL) {
+                free(pixels);
+                if (sd_cache_write_photo(attribution, credit, strlen(credit)) &&
+                    sd_cache_write_photo(image, raw, size)) saved++;
+            }
+            vTaskDelay(pdMS_TO_TICKS(1000));
+        }
+    }
+    free(json);
+    free(raw);
+    char message[80];
+    snprintf(message, sizeof(message), "Model photos: %u saved, %u already on SD", saved, cached);
+    ESP_LOGI(TAG, "%s", message);
+    if (lvgl_port_lock(-1)) {
+        ui_toast(message);
+        lvgl_port_unlock();
+    }
+}
+#endif
+
+void ui_photo_preload_models(void)
+{
+#ifndef APKFLIGHT
+    if (!sd_cache_ready()) {
+        ui_toast("SD card is unavailable");
+        return;
+    }
+    if (s_photo_worker == NULL || atomic_load(&s_busy)) {
+        ui_toast("Photo worker is busy or unavailable");
+        return;
+    }
+    s_preload_requested = true;
+    atomic_store(&s_busy, true);
+    xTaskNotifyGive(s_photo_worker);
+    ui_toast("Loading model thumbnails to SD");
+#endif
+}
+
 static void photo_task(void *arg)
 {
     (void)arg;
     for (;;) {
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-        process_photo_request(&s_photo_request);
+#ifndef APKFLIGHT
+        if (s_preload_requested) {
+            preload_model_library();
+            s_preload_requested = false;
+        } else
+#endif
+        {
+            process_photo_request(&s_photo_request);
+        }
         atomic_store(&s_busy, false);
     }
 }

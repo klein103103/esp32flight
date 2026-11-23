@@ -2163,6 +2163,14 @@ static void radar_brightness_cb(lv_event_t *event)
     lv_obj_add_event_cb(slider, radar_brightness_change_cb, LV_EVENT_VALUE_CHANGED, NULL);
 }
 
+#ifdef CONFIG_CANFLIGHT_BOARD_WAVESHARE_7B
+static void radar_preload_models_cb(lv_event_t *event)
+{
+    (void)event;
+    ui_photo_preload_models();
+}
+#endif
+
 static void radar_set_home_cb(lv_event_t *event)
 {
     (void)event;
@@ -2371,6 +2379,15 @@ static void build_radar_panel(lv_obj_t *scr)
     lv_obj_t *set_home_text = make_label(set_home, UIFONT(&font_pl_14, &font_pl_8), COL_TEXT);
     lv_label_set_text(set_home_text, "Set Home");
     lv_obj_center(set_home_text);
+#ifdef CONFIG_CANFLIGHT_BOARD_WAVESHARE_7B
+    lv_obj_t *preload = lv_btn_create(s_radar_panel);
+    lv_obj_set_size(preload, UISX(120), UISY(32));
+    lv_obj_align(preload, LV_ALIGN_TOP_LEFT, UISX(10), UISY(122));
+    lv_obj_add_event_cb(preload, radar_preload_models_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *preload_text = make_label(preload, UIFONT(&font_pl_14, &font_pl_8), COL_TEXT);
+    lv_label_set_text(preload_text, "Preload photos");
+    lv_obj_center(preload_text);
+#endif
     if (waveshare_rgb_lcd_bl_dimmable()) {
         lv_obj_t *brightness = lv_btn_create(s_radar_panel);
         lv_obj_set_size(brightness, UISX(112), UISY(32));
