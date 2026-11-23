@@ -1,0 +1,36 @@
+name: Build SD aircraft model photo library
+on:
+  push:
+    branches: [waveshare-7b-custom]
+    paths:
+      - tools/build_model_library.py
+      - .github/workflows/model-photo-library.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  model-library:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: laegsgaardTroels/whatisflying-db
+          ref: e168f2a591bcddeabd6c9830e0fcd482a050b13f
+          path: source-catalog
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            /data/aircraft_types_pictures.csv
+            /data/aircraft_types_pictures/
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install Pillow
+      - run: python tools/build_model_library.py source-catalog/data sd-library
+      - run: cat sd-library/radar/models/README.txt >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: radar-sd-model-photo-library
+          path: sd-library/
+          if-no-files-found: error
+          retention-days: 90
