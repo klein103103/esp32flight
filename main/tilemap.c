@@ -481,6 +481,9 @@ static void tile_source_url(char *out, size_t n, int z, int tx, int ty)
 
 const char *tilemap_source_credit(void)
 {
+#ifndef APKFLIGHT
+    if (sd_map_archive_available()) return "Natural Earth / online map fallback";
+#endif
     const settings_t *c = settings_get();
     if (c->tile_url[0] != '\0') {
         return "\xC2\xA9 map data providers";
@@ -501,11 +504,14 @@ static bool blit_tile(esp_http_client_handle_t client, tile_sink_t *sink,
      * the 7B where the pass is longest). */
     vTaskDelay(1);
     uint32_t key = ((uint32_t)z << 26) | ((uint32_t)tx << 13) | (uint32_t)ty;
+    bool skip_archive = false;
     for (int attempt = 0; attempt < 2; attempt++) {
     uint32_t clen = 0;
     const uint8_t *fetch_buf = NULL;
     size_t len = 0;
     bool from_cache = false;
+    bool from_archive = false;
+    uint32_t cache_key = key;
     uint8_t *flash_buf = NULL;
 #ifndef APKFLIGHT
     char sd_directory[32], sd_path[56];
@@ -513,7 +519,22 @@ static bool blit_tile(esp_http_client_handle_t client, tile_sink_t *sink,
     if (use_sd) sd_tile_path(key, sd_directory, sizeof(sd_directory), sd_path, sizeof(sd_path));
 #endif
 
-    if (attempt == 0) {
+#ifndef APKFLIGHT
+    if (attempt == 0 && !skip_archive && use_sd && sd_map_archive_available()) {
+        const uint32_t archive_key = key | UINT32_C(0x40000000);
+        fetch_buf = tcache_get(archive_key, &clen);
+        len = clen;
+        if (fetch_buf == NULL) {
+            len = sd_map_archive_read(z, tx, ty, sink->buf, TILE_BUF);
+            if (len != 0) fetch_buf = sink->buf;
+        }
+        if (fetch_buf != NULL) {
+            from_archive = from_cache = true;
+            cache_key = archive_key;
+        }
+    }
+#endif
+    if (!from_cache && attempt == 0) {
         fetch_buf = tcache_get(key, &clen);
         len = clen;
         from_cache = fetch_buf != NULL;
@@ -569,11 +590,16 @@ static bool blit_tile(esp_http_client_handle_t client, tile_sink_t *sink,
     pngst.decoder.color_convert = 0;
     unsigned lret = lodepng_decode(&rgba, &w, &h, &pngst, fetch_buf, len);
     int bpp = 4;
+    bool packed_palette = false;
     const unsigned char *pal = NULL;
     size_t paln = 0;
     if (lret == 0) {
         const LodePNGColorMode *cm = &pngst.info_png.color;
-        if (cm->colortype == LCT_PALETTE && cm->bitdepth == 8) {
+        if (from_archive && cm->colortype == LCT_PALETTE && cm->bitdepth == 4) {
+            packed_palette = true;
+            pal = cm->palette;
+            paln = cm->palettesize;
+        } else if (cm->colortype == LCT_PALETTE && cm->bitdepth == 8) {
             bpp = 1;
             pal = cm->palette;
             paln = cm->palettesize;
@@ -604,13 +630,17 @@ static bool blit_tile(esp_http_client_handle_t client, tile_sink_t *sink,
         free(rgba);
         rgba = NULL;
         w = h = 0;
-        tcache_drop_all_except(key);
+        tcache_drop_all_except(cache_key);
         lodepng_state_cleanup(&pngst);
         lodepng_state_init(&pngst);
         pngst.decoder.color_convert = 0;
         lret = lodepng_decode(&rgba, &w, &h, &pngst, fetch_buf, len);
         const LodePNGColorMode *cm2 = &pngst.info_png.color;
-        if (lret == 0 && cm2->colortype == LCT_PALETTE && cm2->bitdepth == 8) {
+        if (lret == 0 && from_archive && cm2->colortype == LCT_PALETTE && cm2->bitdepth == 4) {
+            packed_palette = true;
+            pal = cm2->palette;
+            paln = cm2->palettesize;
+        } else if (lret == 0 && cm2->colortype == LCT_PALETTE && cm2->bitdepth == 8) {
             bpp = 1;
             pal = cm2->palette;
             paln = cm2->palettesize;
@@ -641,7 +671,12 @@ static bool blit_tile(esp_http_client_handle_t client, tile_sink_t *sink,
         /* poisoned cache (e.g. a tile truncated by a short flash write
          * during memory pressure): purge both layers, refetch */
         ESP_LOGW(TAG, "tile %d/%d/%d: cached copy undecodable, refetching", z, tx, ty);
-        tcache_drop_key(key);
+        tcache_drop_key(cache_key);
+        if (from_archive) {
+            skip_archive = true;
+            attempt--;
+            continue;
+        }
         ftile_unlink(key);
 #ifndef APKFLIGHT
         if (use_sd) unlink(sd_path);
@@ -655,11 +690,11 @@ static bool blit_tile(esp_http_client_handle_t client, tile_sink_t *sink,
 #endif
         ftile_put(key, fetch_buf, len);
     }
-    if (fetch_buf == sink->buf) tcache_put(key, fetch_buf, len);
+    if (fetch_buf == sink->buf) tcache_put(cache_key, fetch_buf, len);
     const bool light = settings_get()->map_light;
     /* hoisted: calling tile_source_is_osm() per pixel multiplied the
      * per-tile cost on every render (0.4.6 regression) */
-    const bool darken = !light && tile_source_is_osm();
+    const bool darken = !from_archive && !light && tile_source_is_osm();
     /* clip the x-range once per tile instead of testing every pixel */
     int x0 = ox < 0 ? -ox : 0;
     int x1 = ox + (int)w > dst_w ? dst_w - ox : (int)w;
@@ -668,11 +703,12 @@ static bool blit_tile(esp_http_client_handle_t client, tile_sink_t *sink,
         if (dy < 0 || dy >= dst_h) {
             continue;
         }
-        const unsigned char *src = rgba + (size_t)y * w * bpp;
+        const unsigned char *src = rgba + (size_t)y * (packed_palette ? w / 2 : w * bpp);
         for (int x = x0; x < x1; x++) {
             int r, g, b;
-            if (bpp == 1) {
-                unsigned idx = src[x];
+            if (packed_palette || bpp == 1) {
+                unsigned idx = packed_palette ?
+                    (x & 1 ? src[x / 2] & 15 : src[x / 2] >> 4) : src[x];
                 const unsigned char *p = idx < paln ? pal + idx * 4 : pal;
                 r = p[0]; g = p[1]; b = p[2];
             } else {

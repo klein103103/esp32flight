@@ -1,4 +1,5 @@
 #include "sd_cache.h"
+#include "radmap_archive.h"
 #include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -17,6 +18,7 @@
 #endif
 
 static atomic_bool s_ready;
+static uint16_t s_map_levels;
 static atomic_uint s_photo_hits, s_photo_saves;
 
 unsigned sd_photo_cache_hits(void) { return atomic_load(&s_photo_hits); }
@@ -57,6 +59,20 @@ void sd_cache_init(void)
     mkdir("/sd/radar/tiles", 0775);
     mkdir("/sd/radar/photos", 0775);
     mkdir("/sd/radar/models", 0775);
+    mkdir("/sd/radar/details", 0775);
+    for (unsigned z = 0; z <= 11; z++) {
+        char path[40];
+        snprintf(path, sizeof(path), "/sd/radar/maps/z%02u.rmap", z);
+        FILE *file = fopen(path, "rb");
+        if (file != NULL) {
+            unsigned char magic[8];
+            if (fread(magic, 1, sizeof(magic), file) == sizeof(magic) &&
+                memcmp(magic, "RADMAP01", sizeof(magic)) == 0) {
+                s_map_levels |= (uint16_t)(1u << z);
+            }
+            fclose(file);
+        }
+    }
     atomic_store(&s_ready, true);
     ESP_LOGI("sd_cache", "SD cache mounted");
 #endif
@@ -65,6 +81,23 @@ void sd_cache_init(void)
 bool sd_cache_ready(void)
 {
     return atomic_load(&s_ready);
+}
+
+bool sd_map_archive_available(void)
+{
+    return sd_cache_ready() && s_map_levels != 0;
+}
+
+size_t sd_map_archive_read(unsigned z, unsigned x, unsigned y, void *buffer, size_t capacity)
+{
+    if (!sd_cache_ready() || z > 11 || !(s_map_levels & (1u << z))) return 0;
+    char path[40];
+    snprintf(path, sizeof(path), "/sd/radar/maps/z%02u.rmap", z);
+    FILE *file = fopen(path, "rb");
+    if (!file) return 0;
+    size_t bytes = radmap_read(file, z, x, y, buffer, capacity);
+    fclose(file);
+    return bytes;
 }
 
 size_t sd_cache_read(const char *path, void *buffer, size_t capacity)
@@ -94,6 +127,15 @@ static bool write_cache_file(const char *path, const void *buffer, size_t size)
         return false;
     }
     return true;
+}
+
+bool sd_cache_write_details(const char *path, const void *data, size_t size)
+{
+    uint64_t total, available;
+    return sd_cache_ready() && size <= 8192 &&
+           esp_vfs_fat_info("/sd", &total, &available) == ESP_OK &&
+           available > UINT64_C(512) * 1024 * 1024 + size &&
+           write_cache_file(path, data, size);
 }
 
 bool sd_cache_write_photo(const char *path, const void *buffer, size_t size)

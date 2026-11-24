@@ -259,10 +259,34 @@ static void show_route_details(const photo_req_t *req, char *buffer, size_t size
     if (reg[0] && type[0]) return;
     if (strlen(req->hex) != 6 || strspn(req->hex, "0123456789abcdefABCDEF") != 6) return;
 
-    char url[96];
-    snprintf(url, sizeof(url), "https://hexdb.io/api/v2/aircraft/%s", req->hex);
-    if (http_get_to_buffer_t(url, buffer, size, NULL, 3000) != ESP_OK) return;
-    cJSON *root = cJSON_Parse(buffer);
+    cJSON *root = NULL;
+#ifndef APKFLIGHT
+    char identity_path[64];
+    snprintf(identity_path, sizeof(identity_path), "/sd/radar/details/hex-%06lx.txt",
+             strtoul(req->hex, NULL, 16));
+    size_t cached_bytes = sd_cache_read(identity_path, buffer, size - 1);
+    buffer[cached_bytes] = '\0';
+    if (cached_bytes) {
+        root = cJSON_Parse(buffer);
+        if (!cJSON_IsString(cJSON_GetObjectItem(root, "registration")) ||
+            !cJSON_IsString(cJSON_GetObjectItem(root, "type"))) {
+            cJSON_Delete(root);
+            root = NULL;
+        }
+    }
+#endif
+    if (root == NULL) {
+        char url[96];
+        snprintf(url, sizeof(url), "https://hexdb.io/api/v2/aircraft/%s", req->hex);
+        if (http_get_to_buffer_t(url, buffer, size, NULL, 3000) != ESP_OK) return;
+        root = cJSON_Parse(buffer);
+#ifndef APKFLIGHT
+        if (cJSON_IsString(cJSON_GetObjectItem(root, "registration")) &&
+            cJSON_IsString(cJSON_GetObjectItem(root, "type"))) {
+            sd_cache_write_details(identity_path, buffer, strlen(buffer));
+        }
+#endif
+    }
     const cJSON *remote_reg = cJSON_GetObjectItem(root, "registration");
     const cJSON *remote_type = cJSON_GetObjectItem(root, "type");
     snprintf(identity, sizeof(identity), "Registration: %.18s  |  Aircraft: %.61s",

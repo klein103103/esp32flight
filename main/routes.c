@@ -12,6 +12,10 @@
 #include "http_util.h"
 #include "esp_http_client.h"
 #include "tz.h"
+#ifndef APKFLIGHT
+#include <time.h>
+#include "sd_cache.h"
+#endif
 
 /* Negative entries retry after this long: route DBs fill in during the day */
 #define NEGATIVE_TTL_MS (30LL * 60 * 1000)
@@ -400,6 +404,33 @@ static esp_err_t adsbdb_route(char *buf, const char *callsign, route_info_t *out
     return ESP_OK;
 }
 
+#ifndef APKFLIGHT
+#define SD_ROUTE_TTL_SECONDS (2 * 60 * 60)
+
+static bool confirmed_detail_route(const route_info_t *route, const aircraft_t *aircraft)
+{
+    return aircraft->has_pos &&
+           route_fit_position(route, aircraft->lat, aircraft->lon, true,
+                              aircraft->track_deg, aircraft->gs_kts,
+                              aircraft->baro_rate_fpm) == GEO_FIT_CONFIRMED;
+}
+
+static bool read_detail_route(const char *path, time_t now, const aircraft_t *aircraft,
+                              route_info_t *out)
+{
+    char record[64] = "", from[5], to[5];
+    size_t length = sd_cache_read(path, record, sizeof(record)-1);
+    record[length] = '\0';
+    long long saved;
+    if (sscanf(record, "%lld %4[A-Z0-9] %4[A-Z0-9]", &saved, from, to) != 3 ||
+        saved < 1735689600LL || saved > now || now - saved > SD_ROUTE_TTL_SECONDS ||
+        strlen(from) != 4 || strlen(to) != 4 || strcmp(from, to) == 0) return false;
+    if (!airports_lookup(from, &out->origin) || !airports_lookup(to, &out->destination)) return false;
+    out->valid = true;
+    return confirmed_detail_route(out, aircraft);
+}
+#endif
+
 bool routes_lookup_details(const aircraft_t *aircraft, route_info_t *out, char *buffer)
 {
     const char *callsign = aircraft->callsign;
@@ -409,6 +440,15 @@ bool routes_lookup_details(const aircraft_t *aircraft, route_info_t *out, char *
         return false;
     }
     strlcpy(out->callsign, callsign, sizeof(out->callsign));
+
+#ifndef APKFLIGHT
+    char path[64];
+    snprintf(path, sizeof(path), "/sd/radar/details/route-%s.txt", callsign);
+    const time_t now = time(NULL);
+    if (read_detail_route(path, now, aircraft, out)) return true;
+    memset(out, 0, sizeof(*out));
+    strlcpy(out->callsign, callsign, sizeof(out->callsign));
+#endif
 
     /* Share the stock providers and position checks without changing the
      * flight task's route cache from this worker. */
@@ -430,6 +470,14 @@ bool routes_lookup_details(const aircraft_t *aircraft, route_info_t *out, char *
         memset(out, 0, sizeof(*out));
         strlcpy(out->callsign, callsign, sizeof(out->callsign));
     }
+#ifndef APKFLIGHT
+    if (now >= 1735689600LL && confirmed_detail_route(out, aircraft)) {
+        char record[40];
+        int length = snprintf(record, sizeof(record), "%lld %.4s %.4s\n",
+                              (long long)now, out->origin.icao, out->destination.icao);
+        if (length > 0 && length < sizeof(record)) sd_cache_write_details(path, record, length);
+    }
+#endif
     return out->valid;
 }
 
