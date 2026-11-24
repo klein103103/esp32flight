@@ -471,6 +471,7 @@ static void publish_web_state(const aircraft_list_t *list, const weather_t *wx,
     cJSON_AddNumberToObject(root, "radius_km", (int)(radius_nm * 1.852));
 #ifndef APKFLIGHT
     cJSON_AddBoolToObject(root, "sd_cache_ready", sd_cache_ready());
+    cJSON_AddBoolToObject(root, "sd_world_map_ready", sd_map_archive_available());
     cJSON_AddStringToObject(root, "sd_cache_status", sd_cache_status());
     cJSON_AddNumberToObject(root, "sd_photo_hits", sd_photo_cache_hits());
     cJSON_AddNumberToObject(root, "sd_photo_saves", sd_photo_cache_saves());

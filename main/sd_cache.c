@@ -1,6 +1,7 @@
 #include "sd_cache.h"
 #include "radmap_archive.h"
 #include <stdatomic.h>
+#include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -111,7 +112,7 @@ size_t sd_cache_read(const char *path, void *buffer, size_t capacity)
     return count;
 }
 
-static bool write_cache_file(const char *path, const void *buffer, size_t size)
+static bool write_cache_file(const char *path, const void *buffer, size_t size, bool replace)
 {
     char temporary[80];
     size_t len = strlen(path);
@@ -122,11 +123,11 @@ static bool write_cache_file(const char *path, const void *buffer, size_t size)
     if (file == NULL) return false;
     bool written = fwrite(buffer, 1, size, file) == size;
     if (fclose(file) != 0) written = false;
-    if (!written || rename(temporary, path) != 0) {
-        unlink(temporary);
-        return false;
-    }
-    return true;
+    if (written && (rename(temporary, path) == 0 ||
+                    (replace && errno == EEXIST && unlink(path) == 0 &&
+                     rename(temporary, path) == 0))) return true;
+    unlink(temporary);
+    return false;
 }
 
 bool sd_cache_write_details(const char *path, const void *data, size_t size)
@@ -135,7 +136,7 @@ bool sd_cache_write_details(const char *path, const void *data, size_t size)
     return sd_cache_ready() && size <= 8192 &&
            esp_vfs_fat_info("/sd", &total, &available) == ESP_OK &&
            available > UINT64_C(512) * 1024 * 1024 + size &&
-           write_cache_file(path, data, size);
+           write_cache_file(path, data, size, true);
 }
 
 bool sd_cache_write_photo(const char *path, const void *buffer, size_t size)
@@ -144,7 +145,7 @@ bool sd_cache_write_photo(const char *path, const void *buffer, size_t size)
     if (!sd_cache_ready() || esp_vfs_fat_info("/sd", &total, &free_bytes) != ESP_OK ||
         free_bytes < UINT64_C(512) * 1024 * 1024 + size) return false;
     mkdir("/sd/radar/cachep", 0775);
-    bool saved = write_cache_file(path, buffer, size);
+    bool saved = write_cache_file(path, buffer, size, false);
     size_t length = strlen(path);
     if (saved && length >= 4 && strcmp(path + length - 4, ".jpg") == 0) {
         atomic_fetch_add(&s_photo_saves, 1);
@@ -167,7 +168,7 @@ static bool write_sd_tile(const char *directory, const char *path,
     }
     if (free_bytes < UINT64_C(512) * 1024 * 1024 + size) return false;
     mkdir(directory, 0775);
-    if (!write_cache_file(path, buffer, size)) return false;
+    if (!write_cache_file(path, buffer, size, false)) return false;
     free_bytes -= size;
     return true;
 }

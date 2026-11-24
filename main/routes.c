@@ -475,7 +475,7 @@ bool routes_lookup_details(const aircraft_t *aircraft, route_info_t *out, char *
         char record[40];
         int length = snprintf(record, sizeof(record), "%lld %.4s %.4s\n",
                               (long long)now, out->origin.icao, out->destination.icao);
-        if (length > 0 && length < sizeof(record)) sd_cache_write_details(path, record, length);
+        if (length > 0 && (size_t)length < sizeof(record)) sd_cache_write_details(path, record, length);
     }
 #endif
     return out->valid;

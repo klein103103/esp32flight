@@ -251,4 +251,37 @@ cc -std=c11 -Wall -Wextra -Werror -I main -o "$tmp/preferences" "$tmp/preference
 "$tmp/preferences"
 echo "settings and stale cutoff tests passed"
 
+cat > "$tmp/radmap_tests.c" <<'EOF'
+#include <assert.h>
+#include "radmap_archive.h"
+
+int main(void)
+{
+    FILE *f = tmpfile();
+    assert(f);
+    static const unsigned char fixture[] = {
+        'R','A','D','M','A','P','0','1', 1,0,0,0, 0,0,0,0, 0,1,0,0, 1,0,0,0,
+        32,0,0,0, 24,0,0,0,
+        0x89,'P','N','G',13,10,26,10, 0,0,0,13, 'I','H','D','R', 0,0,1,0, 0,0,1,0
+    };
+    unsigned char buffer[24];
+    assert(fwrite(fixture, 1, sizeof(fixture), f) == sizeof(fixture));
+    rewind(f);
+    assert(radmap_read(f, 0, 0, 0, buffer, sizeof(buffer)) == 24);
+    rewind(f);
+    assert(radmap_read(f, 0, 1, 0, buffer, sizeof(buffer)) == 0);
+    rewind(f);
+    assert(radmap_read(f, 0, 0, 0, buffer, 23) == 0);
+    assert(fseek(f, 24, SEEK_SET) == 0);
+    assert(fputc(255, f) == 255);
+    rewind(f);
+    assert(radmap_read(f, 0, 0, 0, buffer, sizeof(buffer)) == 0);
+    fclose(f);
+    return 0;
+}
+EOF
+cc -std=c11 -Wall -Wextra -Werror -I main -o "$tmp/radmap_tests" "$tmp/radmap_tests.c"
+"$tmp/radmap_tests"
+echo "SD archive reader tests passed"
+
 echo "host tests passed"

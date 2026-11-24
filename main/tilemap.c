@@ -481,10 +481,14 @@ static void tile_source_url(char *out, size_t n, int z, int tx, int ty)
 
 const char *tilemap_source_credit(void)
 {
-#ifndef APKFLIGHT
-    if (sd_map_archive_available()) return "Natural Earth / online map fallback";
-#endif
     const settings_t *c = settings_get();
+#ifndef APKFLIGHT
+    if (sd_map_archive_available()) {
+        if (c->tile_url[0]) return "Natural Earth / map data providers";
+        if (c->carto_key[0]) return "Natural Earth / © OSM / © CARTO";
+        return "Natural Earth / © OpenStreetMap contributors";
+    }
+#endif
     if (c->tile_url[0] != '\0') {
         return "\xC2\xA9 map data providers";
     }
