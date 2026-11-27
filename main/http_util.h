@@ -9,6 +9,7 @@ esp_err_t http_get_to_buffer(const char *url, char *buf, size_t buf_size, size_t
 
 /* Same, with a caller-chosen timeout: enrichment lookups (routes, airline
  * names, timezones) should give up quickly instead of stalling the cycle. */
+esp_err_t http_get_local_to_buffer(const char *url, char *buf, size_t size, int timeout_ms);
 esp_err_t http_get_to_buffer_t(const char *url, char *buf, size_t buf_size, size_t *out_len,
                                int timeout_ms);
 

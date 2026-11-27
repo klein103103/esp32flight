@@ -49,28 +49,33 @@ esp_err_t http_get_to_buffer(const char *url, char *buf, size_t buf_size, size_t
 }
 
 static esp_err_t get_with_hdr_t(const char *url, char *buf, size_t buf_size, size_t *out_len,
-                                const char *hdr_key, const char *hdr_val, int timeout_ms, int *retry_after);
+                                const char *hdr_key, const char *hdr_val, int timeout_ms, int *retry_after, bool local_only);
 
 esp_err_t http_get_to_buffer_t(const char *url, char *buf, size_t buf_size, size_t *out_len,
                                int timeout_ms)
 {
-    return get_with_hdr_t(url, buf, buf_size, out_len, NULL, NULL, timeout_ms, NULL);
+    return get_with_hdr_t(url, buf, buf_size, out_len, NULL, NULL, timeout_ms, NULL, false);
+}
+
+esp_err_t http_get_local_to_buffer(const char *url, char *buf, size_t size, int timeout_ms)
+{
+    return get_with_hdr_t(url, buf, size, NULL, NULL, NULL, timeout_ms, NULL, true);
 }
 
 esp_err_t http_get_to_buffer_hdr(const char *url, char *buf, size_t buf_size, size_t *out_len,
                                  const char *hdr_key, const char *hdr_val)
 {
-    return get_with_hdr_t(url, buf, buf_size, out_len, hdr_key, hdr_val, 12000, NULL);
+    return get_with_hdr_t(url, buf, buf_size, out_len, hdr_key, hdr_val, 12000, NULL, false);
 }
 
 esp_err_t http_get_rate_limited(const char *url, char *buf, size_t size, int *retry_after_seconds)
 {
     *retry_after_seconds = 0;
-    return get_with_hdr_t(url, buf, size, NULL, NULL, NULL, 12000, retry_after_seconds);
+    return get_with_hdr_t(url, buf, size, NULL, NULL, NULL, 12000, retry_after_seconds, false);
 }
 
 static esp_err_t get_with_hdr_t(const char *url, char *buf, size_t buf_size, size_t *out_len,
-                                const char *hdr_key, const char *hdr_val, int timeout_ms, int *retry_after)
+                                const char *hdr_key, const char *hdr_val, int timeout_ms, int *retry_after, bool local_only)
 {
     sink_t sink = { .buf = buf, .cap = buf_size, .len = 0, .overflow = false };
 
@@ -80,7 +85,8 @@ static esp_err_t get_with_hdr_t(const char *url, char *buf, size_t buf_size, siz
         .user_data = &sink,
         .timeout_ms = timeout_ms,
         .crt_bundle_attach = esp_crt_bundle_attach,
-        .disable_auto_redirect = hdr_key != NULL && strcmp(hdr_key, "X-Api-Key") == 0,
+        .disable_auto_redirect = local_only ||
+                                 (hdr_key != NULL && strcmp(hdr_key, "X-Api-Key") == 0),
         .user_agent = "esp32flight/0.4 (+https://github.com/theqkash/esp32flight)",
     };
     esp_http_client_handle_t client = esp_http_client_init(&config);

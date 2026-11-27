@@ -3,7 +3,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <ctype.h>
 #include "cJSON.h"
 #include "esp_heap_caps.h"
 #include "esp_netif.h"
@@ -98,7 +97,7 @@ static bool discover(char ip[16], const esp_netif_ip_info_t *net)
     bool found = false;
     if (bind(fd, (struct sockaddr *)&source, sizeof(source)) == 0 &&
         sendto(fd, command, sizeof(command), 0, (struct sockaddr *)&target, sizeof(target)) ==
-        sizeof(command)) {
+        (int)sizeof(command)) {
         int64_t deadline = esp_timer_get_time() + 1200000;
         while (!found && ecowitt_active() && esp_timer_get_time() < deadline) {
             unsigned char buf[128];
@@ -227,7 +226,7 @@ static bool fetch(const char *ip, char *out, size_t out_size)
     if (!body) return false;
     snprintf(url, sizeof(url), "http://%s/get_livedata_info", ip);
     bool ok = false;
-    if (http_get_to_buffer_t(url, body, 24 * 1024, NULL, 3000) == ESP_OK) {
+    if (http_get_local_to_buffer(url, body, 24 * 1024, 3000) == ESP_OK) {
         cJSON *root = cJSON_Parse(body);
         ok = format_readings(root, out, out_size);
         cJSON_Delete(root);
@@ -261,12 +260,14 @@ void ecowitt_poll(void)
     char *out = heap_caps_calloc(1, 8192, MALLOC_CAP_SPIRAM);
     bool ok = false;
     if (out && wifi && esp_netif_get_ip_info(wifi, &net) == ESP_OK && net.ip.addr) {
+        struct in_addr address;
+        if (inet_pton(AF_INET, discovered, &address) != 1 ||
+            !local_address(address.s_addr, &net)) discovered[0] = '\0';
         if (discovered[0] || discover(discovered, &net)) {
             strlcpy(gateway, discovered, sizeof(gateway));
             ok = fetch(gateway, out, 8192);
             if (!ok) discovered[0] = '\0';
         }
-        struct in_addr address;
         if (!ok && inet_pton(AF_INET, manual, &address) == 1 &&
             local_address(address.s_addr, &net) && strcmp(gateway, manual) != 0 &&
             ecowitt_active()) {

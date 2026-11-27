@@ -735,9 +735,17 @@ static void flight_task(void *arg)
     set_status(L()->locating);
     double lat = 0, lon = 0;
     char city[32] = "";
-    while (geolocate_get(&lat, &lon, city, sizeof(city)) != ESP_OK) {
+    while (true) {
+        if (ecowitt_active()) {
+            ecowitt_poll();
+            vTaskDelay(pdMS_TO_TICKS(250));
+            continue;
+        }
+        if (geolocate_get(&lat, &lon, city, sizeof(city)) == ESP_OK) break;
         set_status(L()->geo_retry);
-        vTaskDelay(pdMS_TO_TICKS(5000));
+        for (unsigned i = 0; i < 20 && !ecowitt_active(); i++) {
+            vTaskDelay(pdMS_TO_TICKS(250));
+        }
     }
     if (city[0] == '\0') {
         /* fixed coordinates carry no name - resolve one from the map */
@@ -1116,6 +1124,8 @@ static void flight_task(void *arg)
         }
 
         if (area_revision != ui_radar_area_revision()) continue;
+
+        if (ecowitt_active()) continue;
 
         /* Housekeeping after the aircraft are on screen (still gated by
          * primed so a dead link does not starve the first fetch retries). */
