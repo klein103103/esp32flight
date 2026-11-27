@@ -99,7 +99,7 @@ static bool discover(char ip[16], const esp_netif_ip_info_t *net)
         sendto(fd, command, sizeof(command), 0, (struct sockaddr *)&target, sizeof(target)) ==
         (int)sizeof(command)) {
         int64_t deadline = esp_timer_get_time() + 1200000;
-        while (!found && ecowitt_active() && esp_timer_get_time() < deadline) {
+        while (!found && esp_timer_get_time() < deadline) {
             unsigned char buf[128];
             struct sockaddr_in peer;
             socklen_t peer_len = sizeof(peer);
@@ -235,61 +235,100 @@ static bool fetch(const char *ip, char *out, size_t out_size)
     return ok;
 }
 
-void ecowitt_poll(void)
+bool ecowitt_read(ecowitt_status_t *status, char *out, size_t capacity)
 {
-    static unsigned last_session;
+    static atomic_flag reading = ATOMIC_FLAG_INIT;
+    static char *snapshot;
+    static char discovered[16], saved_gateway[16], saved_manual[16];
+    static uint32_t last_ip;
     static int64_t next_poll, last_success;
-    static char discovered[16];
-    unsigned current = atomic_load(&session);
+    static bool connected;
+    if (atomic_flag_test_and_set(&reading)) return false;
     int64_t now = esp_timer_get_time();
-    if (last_session != current) {
-        last_session = current;
-        next_poll = last_success = 0;
-        discovered[0] = '\0';
-    }
-    if (now < next_poll) return;
-    next_poll = now + 15000000;
-    char manual[16] = "", gateway[16] = "";
+    char manual[16] = "";
     if (lvgl_port_lock(250)) {
         strlcpy(manual, settings_get()->ecowitt_ip, sizeof(manual));
         lvgl_port_unlock();
+    } else {
+        strlcpy(manual, saved_manual, sizeof(manual));
     }
-    const char *status = "Gateway unavailable. Check Wi-Fi or its IP in Settings.";
     esp_netif_t *wifi = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
-    esp_netif_ip_info_t net;
-    char *out = heap_caps_calloc(1, 8192, MALLOC_CAP_SPIRAM);
-    bool ok = false;
-    if (out && wifi && esp_netif_get_ip_info(wifi, &net) == ESP_OK && net.ip.addr) {
-        struct in_addr address;
-        if (inet_pton(AF_INET, discovered, &address) != 1 ||
-            !local_address(address.s_addr, &net)) discovered[0] = '\0';
-        if (discovered[0] || discover(discovered, &net)) {
-            strlcpy(gateway, discovered, sizeof(gateway));
-            ok = fetch(gateway, out, 8192);
-            if (!ok) discovered[0] = '\0';
-        }
-        if (!ok && inet_pton(AF_INET, manual, &address) == 1 &&
-            local_address(address.s_addr, &net) && strcmp(gateway, manual) != 0 &&
-            ecowitt_active()) {
-            strlcpy(gateway, manual, sizeof(gateway));
-            ok = fetch(gateway, out, 8192);
+    esp_netif_ip_info_t net = {0};
+    if (wifi) esp_netif_get_ip_info(wifi, &net);
+    if (net.ip.addr != last_ip || strcmp(saved_manual, manual) != 0) {
+        last_ip = net.ip.addr;
+        strlcpy(saved_manual, manual, sizeof(saved_manual));
+        discovered[0] = saved_gateway[0] = '\0';
+        last_success = next_poll = 0;
+        connected = false;
+        if (snapshot) snapshot[0] = '\0';
+    }
+    if (now >= next_poll) {
+        next_poll = now + 15000000;
+        connected = false;
+        char gateway[16] = "";
+        char *fresh = net.ip.addr ? heap_caps_calloc(1, ECOWITT_READINGS_SIZE, MALLOC_CAP_SPIRAM) : NULL;
+        if (fresh) {
+            struct in_addr address;
+            if (inet_pton(AF_INET, discovered, &address) != 1 ||
+                !local_address(address.s_addr, &net)) discovered[0] = '\0';
+            if (discovered[0] || discover(discovered, &net)) {
+                strlcpy(gateway, discovered, sizeof(gateway));
+                connected = fetch(gateway, fresh, ECOWITT_READINGS_SIZE);
+                if (!connected) discovered[0] = '\0';
+            }
+            if (!connected && inet_pton(AF_INET, manual, &address) == 1 &&
+                local_address(address.s_addr, &net) && strcmp(gateway, manual) != 0) {
+                strlcpy(gateway, manual, sizeof(gateway));
+                connected = fetch(gateway, fresh, ECOWITT_READINGS_SIZE);
+            }
+            if (connected) {
+                free(snapshot);
+                snapshot = fresh;
+                fresh = NULL;
+                last_success = esp_timer_get_time();
+                strlcpy(saved_gateway, gateway, sizeof(saved_gateway));
+            }
+            free(fresh);
         }
     }
-    if (lvgl_port_lock(500)) {
+    status->connected = connected;
+    status->age_seconds = last_success ? (esp_timer_get_time() - last_success) / 1000000 : -1;
+    strlcpy(status->gateway, saved_gateway, sizeof(status->gateway));
+    strlcpy(out, snapshot ? snapshot : "", capacity);
+    atomic_flag_clear(&reading);
+    return true;
+}
+
+void ecowitt_poll(void)
+{
+    static unsigned last_session;
+    static int64_t next_screen_refresh;
+    unsigned current = atomic_load(&session);
+    int64_t now = esp_timer_get_time();
+    if (current != last_session) {
+        last_session = current;
+        next_screen_refresh = 0;
+    }
+    if (now < next_screen_refresh) return;
+    next_screen_refresh = now + 5000000;
+    char *out = heap_caps_malloc(ECOWITT_READINGS_SIZE, MALLOC_CAP_SPIRAM);
+    if (!out) return;
+    ecowitt_status_t status;
+    if (ecowitt_read(&status, out, ECOWITT_READINGS_SIZE) && lvgl_port_lock(500)) {
         if (panel && ecowitt_active() && atomic_load(&session) == current) {
             char message[100];
-            if (ok) {
-                last_success = esp_timer_get_time();
-                snprintf(message, sizeof(message), "Ecowitt • %s • Live", gateway);
-                status = message;
-                if (strcmp(lv_label_get_text(readings_label), out) != 0)
-                    lv_label_set_text(readings_label, out);
-            } else if (last_success) {
+            if (status.connected) {
+                snprintf(message, sizeof(message), "Ecowitt • %s • Live", status.gateway);
+            } else if (status.age_seconds >= 0) {
                 snprintf(message, sizeof(message), "Gateway unavailable • readings are %lld s old",
-                         (long long)((esp_timer_get_time()-last_success)/1000000));
-                status = message;
+                         (long long)status.age_seconds);
+            } else {
+                strlcpy(message, "Gateway unavailable. Check Wi-Fi or its IP in Settings.", sizeof(message));
             }
-            lv_label_set_text(status_label, status);
+            if (out[0] && strcmp(lv_label_get_text(readings_label), out) != 0)
+                lv_label_set_text(readings_label, out);
+            lv_label_set_text(status_label, message);
         }
         lvgl_port_unlock();
     }

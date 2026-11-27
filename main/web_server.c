@@ -26,6 +26,7 @@
 #include "airports.h"
 #include "ui.h"
 #include "ui_settings.h"
+#include "ecowitt.h"
 #ifndef APKFLIGHT
 #include "sd_cache.h"
 #include "tilemap.h"
@@ -170,6 +171,7 @@ static const char INDEX_HTML[] =
 "<div class='tabs'>"
 "<button class='tab on' id='tb_live' onclick=\"showTab('live')\">Live</button>"
 "<button class='tab' id='tb_hist' onclick=\"showTab('hist')\">History</button>"
+"<button class='tab' id='tb_weather' onclick=\"showTab('weather')\">Weather Station</button>"
 "<button class='tab' id='tb_set' onclick=\"showTab('set')\">Settings</button>"
 "<button class='tab' id='tb_api' onclick=\"showTab('api')\">API</button>"
 "</div></div></div><div class='wrap'>"
@@ -331,6 +333,9 @@ static const char INDEX_HTML[] =
 "</div></div>"
 "<div class='savebar'><button id='cfgsave' onclick='saveCfg()' disabled>Save and restart</button> <span id='cfgstat' class='dim'></span></div></div>"
 "</div>"
+"<div id='t_weather' class='tabpane'><div class='cfgcard'><h3>Weather Station</h3>"
+"<p id='station_status' role='status'>Waiting for Ecowitt readings…</p>"
+"<pre id='station_readings' style='white-space:pre-wrap;font:inherit;line-height:1.6'></pre></div></div>"
 "<div id='t_hist' class='tabpane'>"
 "<div class='sect'><h3>Spotting history</h3>"
 "<input id='hq' placeholder='filter (callsign, type...)'> <button onclick='loadHist()'>Load</button>"
@@ -373,11 +378,22 @@ static const char INDEX_HTML[] =
 "const gst={},alts={};"
 "const ualt=v=>metric?grp(v*0.3048)+' m':grp(v)+' ft';"
 "const uspd=v=>metric?Math.round(v*1.852)+' km/h':v+' kt';"
-"function showTab(n){['live','hist','set','api'].forEach(k=>{"
+"let stationBusy=false;"
+"async function loadStation(){if(stationBusy||document.hidden||!document.getElementById('t_weather').classList.contains('on'))return;"
+"stationBusy=true;const status=document.getElementById('station_status'), readings=document.getElementById('station_readings');"
+"try{const response=await fetch('/api/weather-station',{cache:'no-store'});"
+"if(!response.ok){status.textContent='Weather station is temporarily unavailable.';return;}"
+"const data=await response.json();"
+"if(data.readings)readings.textContent=data.readings;"
+"status.textContent=data.connected?'Ecowitt · '+data.gateway+' · Updated '+data.age_seconds+' s ago':"
+"data.age_seconds>=0?'Gateway unavailable · Last update '+data.age_seconds+' s ago':'Gateway unavailable. Check the Ecowitt IP in the radar’s Weather Station settings.';"
+"}catch(error){status.textContent='Could not reach the radar. Displayed readings may be stale.';}finally{stationBusy=false;}}"
+"setInterval(loadStation,15000);document.addEventListener('visibilitychange',loadStation);"
+"function showTab(n){['live','hist','set','api','weather'].forEach(k=>{"
 "document.getElementById('t_'+k).classList.toggle('on',k===n);"
 "document.getElementById('tb_'+k).classList.toggle('on',k===n);});"
 "if(n==='live'&&map)setTimeout(()=>map.invalidateSize(),50);"
-"if(n==='hist'){loadHist();loadAlerts();}}"
+"if(n==='hist'){loadHist();loadAlerts();}if(n==='weather')loadStation();}"
 "async function loadAlerts(){try{const r=await fetch('/api/alerts');const t=await r.text();"
 "document.getElementById('arows').innerHTML=t.trim().split('\\n').reverse().filter(l=>l)"
 ".slice(0,200).map(l=>{const p=l.split('\t');"
@@ -706,6 +722,32 @@ static int64_t s_state_access_us;
 bool web_state_wanted(void)
 {
     return esp_timer_get_time() - s_state_access_us < 300LL * 1000 * 1000;
+}
+
+static esp_err_t weather_station_get(httpd_req_t *req)
+{
+    AUTH_GUARD(req);
+    char *readings = heap_caps_malloc(ECOWITT_READINGS_SIZE, MALLOC_CAP_SPIRAM);
+    ecowitt_status_t status;
+    if (!readings || !ecowitt_read(&status, readings, ECOWITT_READINGS_SIZE)) {
+        free(readings);
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        return httpd_resp_sendstr(req, "Weather lookup busy");
+    }
+    cJSON *root = cJSON_CreateObject();
+    char *json = NULL;
+    if (root && cJSON_AddBoolToObject(root, "connected", status.connected) &&
+        cJSON_AddNumberToObject(root, "age_seconds", status.age_seconds) &&
+        cJSON_AddStringToObject(root, "gateway", status.gateway) &&
+        cJSON_AddStringToObject(root, "readings", readings)) json = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    free(readings);
+    if (!json) return httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Weather response unavailable");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-store");
+    httpd_resp_set_type(req, "application/json");
+    esp_err_t result = httpd_resp_sendstr(req, json);
+    cJSON_free(json);
+    return result;
 }
 
 static esp_err_t api_get(httpd_req_t *req)
@@ -1590,6 +1632,7 @@ void web_server_start(void)
     const httpd_uri_t uris[] = {
         { .uri = "/", .method = HTTP_GET, .handler = root_get },
         { .uri = "/api/state", .method = HTTP_GET, .handler = api_get },
+        { .uri = "/api/weather-station", .method = HTTP_GET, .handler = weather_station_get },
         { .uri = "/api/config", .method = HTTP_GET, .handler = config_get },
         { .uri = "/api/config", .method = HTTP_POST, .handler = config_post },
         { .uri = "/api/backup", .method = HTTP_GET, .handler = backup_get },
