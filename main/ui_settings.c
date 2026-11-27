@@ -69,6 +69,7 @@ static lv_obj_t *s_slider_night_bright;
 #ifndef APKFLIGHT
 static lv_obj_t *s_ta_flyitaly_key;
 static lv_obj_t *s_ta_update_server;
+static lv_obj_t *s_ta_ecowitt_ip;
 #endif
 
 static bool s_scan_busy;
@@ -448,6 +449,7 @@ static void save_cb(lv_event_t *e)
     strlcpy(cfg->ntfy_topic, lv_textarea_get_text(s_ta_ntfy), sizeof(cfg->ntfy_topic));
     strlcpy(cfg->mqtt_uri, lv_textarea_get_text(s_ta_mqtt), sizeof(cfg->mqtt_uri));
 #ifndef APKFLIGHT
+    strlcpy(cfg->ecowitt_ip, lv_textarea_get_text(s_ta_ecowitt_ip), sizeof(cfg->ecowitt_ip));
     strlcpy(cfg->update_server, lv_textarea_get_text(s_ta_update_server), sizeof(cfg->update_server));
     strlcpy(cfg->flyitaly_key, lv_textarea_get_text(s_ta_flyitaly_key), sizeof(cfg->flyitaly_key));
 #endif
@@ -913,7 +915,13 @@ void ui_settings_open(void)
     }
     lv_obj_t *sw_upload = add_switch(p, "Wi-Fi SD transfer", 0, 1080, cfg->sd_upload_enabled);
     lv_obj_add_event_cb(sw_upload, sd_upload_cb, LV_EVENT_VALUE_CHANGED, NULL);
-    int nety = 1140;
+    add_section(p, "Weather Station", 1140);
+    add_label(p, "Ecowitt gateway IP (optional)", 0, 1174);
+    s_ta_ecowitt_ip = add_textarea(p, 0, 1200, 240, cfg->ecowitt_ip, false);
+    lv_textarea_set_max_length(s_ta_ecowitt_ip, sizeof(cfg->ecowitt_ip) - 1);
+    lv_textarea_set_accepted_chars(s_ta_ecowitt_ip, "0123456789.");
+    add_hint(p, "Automatic discovery runs first. The IP is used if discovery fails.", 0, 1248, 500);
+    int nety = 1308;
 #endif
 
     s_sw_tz_manual = add_switch(p, "Manual time zone", 0, nety, cfg->time_zone_manual);

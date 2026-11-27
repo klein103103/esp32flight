@@ -20,6 +20,7 @@ typedef struct {
     int    theme;           /* index into theme.c palettes */
     int    lang;            /* 0 = English, 1 = Polski */
     char   update_server[160]; /* private HTTPS update directory */
+    char   ecowitt_ip[16]; /* Optional local IPv4 fallback. */
     bool   sd_upload_enabled; /* Enabled from the touchscreen for this boot. */
     bool   ota_enabled;     /* volatile: always false after boot, armed from
                                the on-device settings screen only */

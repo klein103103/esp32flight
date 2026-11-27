@@ -14,6 +14,7 @@
 #include "radar_preferences.h"
 #include "clock_fmt.h"
 #include "ui_photo.h"
+#include "ecowitt.h"
 #include "geo_math.h"
 #include "logos.h"
 #include "flags.h"
@@ -2163,11 +2164,11 @@ static void radar_brightness_cb(lv_event_t *event)
     lv_obj_add_event_cb(slider, radar_brightness_change_cb, LV_EVENT_VALUE_CHANGED, NULL);
 }
 
-#ifdef CONFIG_CANFLIGHT_BOARD_WAVESHARE_7B
-static void radar_preload_models_cb(lv_event_t *event)
+#ifndef APKFLIGHT
+static void radar_weather_station_cb(lv_event_t *event)
 {
     (void)event;
-    ui_photo_preload_models();
+    ecowitt_open();
 }
 #endif
 
@@ -2379,14 +2380,14 @@ static void build_radar_panel(lv_obj_t *scr)
     lv_obj_t *set_home_text = make_label(set_home, UIFONT(&font_pl_14, &font_pl_8), COL_TEXT);
     lv_label_set_text(set_home_text, "Set Home");
     lv_obj_center(set_home_text);
-#ifdef CONFIG_CANFLIGHT_BOARD_WAVESHARE_7B
-    lv_obj_t *preload = lv_btn_create(s_radar_panel);
-    lv_obj_set_size(preload, UISX(120), UISY(32));
-    lv_obj_align(preload, LV_ALIGN_TOP_RIGHT, -UISX(10), UISY(46));
-    lv_obj_add_event_cb(preload, radar_preload_models_cb, LV_EVENT_CLICKED, NULL);
-    lv_obj_t *preload_text = make_label(preload, UIFONT(&font_pl_14, &font_pl_8), COL_TEXT);
-    lv_label_set_text(preload_text, "Preload photos");
-    lv_obj_center(preload_text);
+#ifndef APKFLIGHT
+    lv_obj_t *weather_station = lv_btn_create(s_radar_panel);
+    lv_obj_set_size(weather_station, UISX(145), UISY(32));
+    lv_obj_align(weather_station, LV_ALIGN_TOP_RIGHT, -UISX(10), UISY(46));
+    lv_obj_add_event_cb(weather_station, radar_weather_station_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_t *weather_text = make_label(weather_station, UIFONT(&font_pl_14, &font_pl_8), COL_TEXT);
+    lv_label_set_text(weather_text, "Weather Station");
+    lv_obj_center(weather_text);
 #endif
     if (waveshare_rgb_lcd_bl_dimmable()) {
         lv_obj_t *brightness = lv_btn_create(s_radar_panel);
@@ -3755,12 +3756,12 @@ static void idle_timer_cb(lv_timer_t *t)
      * radar stays up; when the window closes a running screensaver ends
      * too (unless the night schedule has the panel dark). No clock yet
      * means no window check. */
-    bool amb_window = true;
+    bool amb_window = !ecowitt_active();
     /* Track mode: the point is to watch that one flight, so no screensaver
      * (a running one closes) while it is on. */
     if (cfg->track_on && cfg->track_id[0]) {
         amb_window = false;
-    } else if (cfg->amb_sched) {
+    } else if (amb_window && cfg->amb_sched) {
         time_t now = time(NULL);
         if (now > 1600000000) {
             time_t l = now + (tz_home_known() ? tz_home_offset() : 0);

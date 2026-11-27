@@ -17,6 +17,7 @@ idf_component_register(
         "lvgl_port.c"
         "geo_math.c"
         "http_util.c"
+        "ecowitt.c"
         "wifi_mgr.c"
         "wifi_setup.c"
         "geolocate.c"

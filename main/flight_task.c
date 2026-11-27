@@ -43,6 +43,7 @@
 #include "tz.h"
 #include "waveshare_rgb_lcd_port.h"
 #include "ui.h"
+#include "ecowitt.h"
 #include "weather.h"
 #include "web_server.h"
 #include "wifi_mgr.h"
@@ -828,6 +829,11 @@ static void flight_task(void *arg)
             install_configured_update();
         }
 #endif
+        if (ecowitt_active()) {
+            ecowitt_poll();
+            vTaskDelay(pdMS_TO_TICKS(250));
+            continue;
+        }
         /* Aircraft first: everything else (weather, layers, update check)
          * runs after the fetch + render, so it can never delay positions. */
         double query_lat = lat, query_lon = lon;
@@ -839,7 +845,7 @@ static void flight_task(void *arg)
         ESP_LOGD(TAG, "aircraft search %.4f, %.4f within %d NM (area %u)",
                  query_lat, query_lon, radius_nm, area_revision);
         esp_err_t err = flight_fetch_nearby(query_lat, query_lon, radius_nm, list);
-        if (area_revision != ui_radar_area_revision()) {
+        if (ecowitt_active() || area_revision != ui_radar_area_revision()) {
             continue;
         }
         list->area_revision = area_revision;
@@ -1172,7 +1178,7 @@ static void flight_task(void *arg)
         }
 
         int64_t next_poll_ms = esp_timer_get_time() / 1000 + settings_get()->poll_seconds * 1000LL;
-        while (area_revision == ui_radar_area_revision()) {
+        while (!ecowitt_active() && area_revision == ui_radar_area_revision()) {
 #ifndef APKFLIGHT
             if (atomic_load(&s_update_install_requested)) {
                 break;

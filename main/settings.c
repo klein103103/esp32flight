@@ -207,6 +207,7 @@ void settings_load(void)
     if (nvs_get_u8(h, "temp_f", &hide) == ESP_OK) {
         s_settings.temp_f = hide != 0;
     }
+    get_str(h, "ecowitt_ip", s_settings.ecowitt_ip, sizeof(s_settings.ecowitt_ip));
     get_str(h, "webpass", s_settings.web_pass, sizeof(s_settings.web_pass));
     get_str(h, "fltapt", s_settings.filter_airport, sizeof(s_settings.filter_airport));
     int32_t alt = 0;
@@ -357,6 +358,7 @@ esp_err_t settings_save(void)
     nvs_set_str(h, "ladsb", s_settings.local_adsb);
     nvs_set_u8(h, "ladsb_use", s_settings.local_adsb_use ? 1 : 0);
     nvs_set_u8(h, "temp_f", s_settings.temp_f ? 1 : 0);
+    nvs_set_str(h, "ecowitt_ip", s_settings.ecowitt_ip);
     nvs_set_str(h, "webpass", s_settings.web_pass);
     nvs_set_str(h, "fltapt", s_settings.filter_airport);
     nvs_set_i32(h, "altmin", s_settings.alt_min_ft);
